@@ -38,7 +38,5 @@ def assign_stream():
     })
 
 if __name__ == "__main__":
-    print("Starting MongoDB...")
-    Popen("mongod", process_group=os.getpgid(os.getpid()))
     print("Starting Flask server at http://127.0.0.1:5000")
     app.run(debug=True)
