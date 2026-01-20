@@ -18,6 +18,13 @@ export async function uploadFloorplan(file) {
   return res.json();
 }
 
+export async function getFloorplan(){
+  const res = await fetch(`${BASE_URL}/get-floorplan-url`, {
+    method: "GET"
+  });
+  return 
+}
+
 export async function assignStream(payload) {
   const res = await fetch(`${BASE_URL}/assign-stream`, {
     method: "POST",
