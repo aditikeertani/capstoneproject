@@ -1,3 +1,4 @@
+mkdir -p ./backend/db
 echo "Starting MongoDB..."
 mongod --dbpath ./backend/db &
 sleep 5 #gives Mongo time to get up and running
