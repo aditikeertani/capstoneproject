@@ -30,6 +30,15 @@ def assign_stream():
         "data": data
     })
 
+@app.route("/get-floorplan-image")
+def floorplan_image():
+    with open("./test_imgdata") as imgdata:
+        return jsonify({
+            "imagedata":imgdata.read(),
+            "width":4032,
+            "height":3024
+        })
+
 if __name__ == "__main__":
     print("🚀 Starting Flask server at http://127.0.0.1:5000")
     app.run(debug=True)

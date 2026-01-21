@@ -6,6 +6,8 @@ export async function ping() {
   return res.json();
 }
 
+//in the future, this should include an identifier so that we can support
+// multiple floorplans per site
 export async function uploadFloorplan(file) {
   const formData = new FormData();
   formData.append("floorplan", file);
@@ -18,11 +20,12 @@ export async function uploadFloorplan(file) {
   return res.json();
 }
 
-export async function getFloorplan(){
-  const res = await fetch(`${BASE_URL}/get-floorplan-url`, {
-    method: "GET"
-  });
-  return 
+//in the future, this should include an identifier so that we can support
+// multiple floorplans per site
+export async function getFloorplanImage(){
+  const res = await fetch(`${BASE_URL}/get-floorplan-image`);
+  if (!res.ok) throw new Error("Failed to query floorplan from MongoDB");
+  return res.json();
 }
 
 export async function assignStream(payload) {

@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { ping } from "./api";
 import FloorplanUpload from "./components/FloorplanUpload";
+import FloorplanDesigner from "./components/FloorplanDesigner";
 import StreamAssignment from "./components/StreamAssignment";
 
 export default function App() {
@@ -31,6 +32,7 @@ export default function App() {
         <FloorplanUpload />
         <StreamAssignment />
       </div>
+        <FloorplanDesigner />
     </div>
   );
 }
