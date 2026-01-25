@@ -32,7 +32,6 @@ export default function App() {
         <FloorplanUpload />
         <StreamAssignment />
       </div>
-        <FloorplanDesigner />
     </div>
   );
 }
