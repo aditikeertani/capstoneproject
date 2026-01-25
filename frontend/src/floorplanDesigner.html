@@ -1,14 +1,92 @@
 <html>
     <head>
         <link rel="stylesheet" href="index.css">
+        <style>
+            #zoombuttons {
+                /*display: none;*/
+                position: sticky;
+                bottom: 50px;
+                right: 20px;
+            }
+            #zoombuttons input{
+                padding: 0.5em;
+                margin: 0.5em;
+                border-radius: 1em;
+            }
+        </style>
     </head>
     <body>
+        <div>
+        </div>
         <canvas id="c"></canvas>
+        <div id="zoombuttons">
+            <input type="button" value="1X" disabled><input type="button" value="2X"><input type="button" value="4X">
+        </div>
     </body>
     <script>
         c = document.getElementById("c");
         ctx = c.getContext("2d");
-        
-        ctx.drawImage()
+
+        var selectionIndex = 0;
+
+        var selections = [];
+
+        var currentSelection = {
+            "startX":0,
+            "startY":0,
+            "endX":0,
+            "endY":0
+        }
+
+        function beginSelection(){
+
+        }
+
+        function endSelection(){
+            
+        }
+
+        var scaleFactor;
+        async function configureCanvas(){
+            data = await getFloorplanImage();
+            setScaleFactor(data["width"], "width");
+            data["height"]*=scaleFactor;
+            data["width"]*=scaleFactor;
+            console.log(data);
+            img = new Image(data["width"], data["height"]);
+            img.src = data["imagedata"];
+            c.setAttribute("width", data["width"]+"px");
+            c.setAttribute("height", data["height"]+"px");
+            ctx.drawImage(img, 0, 0, data["width"], data["height"]);
+        }
+
+        async function getFloorplanImage(){
+            url = "http://localhost:5000/get-floorplan-image"
+            try {
+                const response = await fetch(url);
+                if (!response.ok) {
+                    throw new Error(`Response status: ${response.status}`);
+                }
+                return await response.json();
+            } catch (error) {
+                console.error(error.message);
+            }
+        }
+
+        function setScaleFactor(value, dimension){
+            if (dimension == "height"){
+                scaleFactor = document.body.clientHeight/value;
+                return true;
+            }
+            else if (dimension == "width"){
+                scaleFactor = document.body.clientWidth/value;
+                return true;
+            }
+            else {
+                return false;
+            }
+        }
+
+        configureCanvas();
     </script>
 </html>

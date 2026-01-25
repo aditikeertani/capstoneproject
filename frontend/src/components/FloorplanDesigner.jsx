@@ -39,7 +39,6 @@ export default function FloorplanDesigner() {
     (floorplanData) => {
       return (
           <div>
-            <input type="button" onClick={loadImage}></input>
             <canvas id="c"
               width={floorplanData["width"]}
               height={floorplanData["height"]}
