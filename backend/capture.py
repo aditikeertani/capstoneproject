@@ -10,26 +10,30 @@ This module handles:
 import os
 import time
 import cv2
+import av
 from datetime import datetime
 
 def capture_frame_from_stream(stream_url):
-    """Capture a single frame from a video stream."""
-    try:
-        cap = cv2.VideoCapture(stream_url)
-        if not cap.isOpened():
-            print(f"Failed to open stream: {stream_url}")
-            return None
-        
-        ret, frame = cap.read()
-        cap.release()
-        
-        if not ret or frame is None:
-            return None
-        return frame
-        
-    except Exception as e:
-        print(f"Error capturing frame: {e}")
+    frame_img = None
+    video = av.open(stream_url, 'r')
+    for packet in video.demux():
+        print(f"Demuxing packet {packet}")
+        for frame in packet.decode():
+            print(f"Decoding frame {frame}")
+            if type(frame) is av.video.frame.VideoFrame:
+                if frame.key_frame:
+                    frame_img = frame.to_ndarray()
+                    # Close Connection to RTSP Source
+                    break
+        if frame_img is not None:
+            break
+
+    if not video or frame_img is None:
         return None
+    return frame_img
+    #except Exception as e:
+    #    print(f"Error capturing frame: {e}")
+    #    return None
 
 
 def save_screenshot(frame, stream_id, screenshots_dir):
