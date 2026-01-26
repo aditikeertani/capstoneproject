@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef } from "react";
-import h337 from 'heatmap.js';
+import h337 from './heatmap.js';
   
     
 function turnt(v){
@@ -123,4 +123,5 @@ export default function HeatmapOverlay({
       </svg>
     </div>
   );
+
 }
