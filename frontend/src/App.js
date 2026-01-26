@@ -4,8 +4,8 @@ import FloorplanUpload from "./components/FloorplanUpload";
 import StreamAssignment from "./components/StreamAssignment";
 import HeatmapOverlay from "./heatmap_ui/HeatmapOverlay";
 import HeatmapTest from "./heatmap_ui/HeatmapTest";
-
-
+import FloorplanDesigner from "./components/FloorplanDesigner";
+import FeedSelection from "./components/FeedSelection";
 
 export default function App() {
   const [pingResult, setPingResult] = useState("");
@@ -30,28 +30,34 @@ export default function App() {
   <div style={{ padding: 20, fontFamily: "Arial" }}>
     <h1 style={{ marginTop: 0 }}>Occupancy Detection Dashboard</h1>
 
-    <div style={{ marginBottom: 16 }}>
-      <button onClick={onPing} style={{ padding: "8px 12px" }}>
-        Ping Backend
-      </button>
-      <span style={{ marginLeft: 10 }}>{pingResult}</span>
-    </div>
+      {/* Tab Navigation */}
+      <div style={{ borderBottom: "1px solid #ddd", marginBottom: 20 }}>
+        <button style={tabStyle("dashboard")} onClick={() => setActiveTab("dashboard")}>
+          Dashboard
+        </button>
+        <button style={tabStyle("designer")} onClick={() => setActiveTab("designer")}>
+          Floorplan Designer
+        </button>
+      </div>
 
-    <div style={{ display: "grid", gap: 16 }}>
-      <FloorplanUpload />
-      <StreamAssignment />
-    </div>
+      {activeTab === "dashboard" && (
+        <>
+          <div style={{ marginBottom: 16 }}>
+            <button onClick={onPing} style={{ padding: "8px 12px" }}>
+              Ping Backend
+            </button>
+            <span style={{ marginLeft: 10 }}>{pingResult}</span>
+          </div>
 
-    <div style={{ marginTop: 24 }}>
-      <h2>Occupancy Heatmap</h2>
-      <HeatmapOverlay points={detectionPoints} />
-    </div>
+          <div style={{ display: "grid", gap: 16 }}>
+            <FloorplanUpload />
+            <StreamAssignment />
+          </div>
+        </>
+      )}
 
-    <div style={{ marginTop: 24 }}>
-      <h2>Heatmap Working Test</h2>
-      <HeatmapTest />
+      {activeTab === "designer" && <FloorplanDesigner />}
     </div>
-  </div>
-);
+  );
 }
 

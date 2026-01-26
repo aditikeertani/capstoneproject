@@ -58,47 +58,81 @@ def process_stream(stream_id, stream_url, active_streams, occupancy_data,
             if frame is not None:
                 # Save screenshot
                 screenshot_path = save_screenshot(frame, stream_id, screenshots_dir)
-                # Run prediction
-                prediction = predict_fn(frame)
+                
                 # Get frame dimensions
-                height, width = frame.shape[:2]
-                # Update occupancy data
+                frame_height, frame_width = frame.shape[:2]
+                
+                # Get latest coordinates from active_streams (may have been updated with camera coords)
+                current_coords = active_streams[stream_id].get('coordinates', coordinates)
+                
+                # Update occupancy data for each seat
                 seats_data = []
-                for coord in coordinates:
+                for coord in current_coords:
+                    seat_id = coord.get("id", "unknown")
+                    
+                    # Check if seat has camera coordinates (mappings from Feed Selection)
+                    camera_x = coord.get("camera_x")
+                    camera_y = coord.get("camera_y")
+                    camera_width = coord.get("camera_width")
+                    camera_height = coord.get("camera_height")
+                    
+                    # If camera coordinates exist, crop that region for prediction
+                    if all(v is not None and v > 0 for v in [camera_x, camera_y, camera_width, camera_height]):
+                        # Ensure coordinates are within frame bounds
+                        x1 = max(0, int(camera_x))
+                        y1 = max(0, int(camera_y))
+                        x2 = min(frame_width, int(camera_x + camera_width))
+                        y2 = min(frame_height, int(camera_y + camera_height))
+                        
+                        # Crop the region
+                        cropped_frame = frame[y1:y2, x1:x2]
+                        
+                        if cropped_frame.size > 0:
+                            # Run prediction on cropped region
+                            prediction = predict_fn(cropped_frame)
+                            print(f"Predicted seat {coord.get('label', seat_id)}: {prediction['class_name']} (camera region)")
+                        else:
+                            # Fallback to full frame if crop fails
+                            prediction = predict_fn(frame)
+                            print(f"Predicted seat {coord.get('label', seat_id)}: {prediction['class_name']} (full frame - crop failed)")
+                    else:
+                        # No camera coordinates, use full frame prediction
+                        prediction = predict_fn(frame)
+                        print(f"Predicted seat {coord.get('label', seat_id)}: {prediction['class_name']} (full frame - no mapping)")
+                    
+                    # Build seat result with all coordinates
                     seat_result = {
-                        "id": coord["id"],
-                        "x": coord["x"],
-                        "y": coord["y"],
-                        "width": width,
-                        "height": height,
-                        "label": coord["label"],
+                        "id": seat_id,
+                        # Floorplan coordinates
+                        "x": coord.get("x", 0),
+                        "y": coord.get("y", 0),
+                        "width": coord.get("width", 0),
+                        "height": coord.get("height", 0),
+                        # Camera coordinates
+                        "camera_x": camera_x,
+                        "camera_y": camera_y,
+                        "camera_width": camera_width,
+                        "camera_height": camera_height,
+                        # Seat info
+                        "label": coord.get("label", "Unknown"),
+                        # Prediction result
                         "status": prediction["class_index"],
+                        "status_name": prediction["class_name"],
                         "confidence": prediction["confidence"]
                     }
-                    occupancy_data[stream_id][coord["id"]] = seat_result
+                    occupancy_data[stream_id][seat_id] = seat_result
                     seats_data.append(seat_result)
-                # Store in MongoDB if available
-                if mongo_available and mongo:
-                    try:
-                        occupancy_doc = {
-                            "stream_id": stream_id,
-                            "timestamp": datetime.now().isoformat(),
-                            "seats": seats_data,
-                            "screenshot_path": screenshot_path
-                        }
-                        mongo.db.occupancy_history.insert_one(occupancy_doc)
-                        # Also update current occupancy
-                        mongo.db.current_occupancy.update_one(
-                            {"stream_id": stream_id},
-                            {"$set": occupancy_doc},
-                            upsert=True
-                        )
-                    except Exception as e:
-                        print(f"Failed to store occupancy in MongoDB: {e}")
-                print(f"Occupancy updated for {stream_id}: {prediction['class_name']}")
+                
+                # Occupancy data is kept in-memory only (not persisted to MongoDB)
+                # This avoids storing large amounts of historical data
+                
+                print(f"Occupancy updated for {stream_id}: {len(seats_data)} seats processed")
             else:
                 print(f"No frame captured for {stream_id}")
         except Exception as e:
             print(f"Error processing stream {stream_id}: {e}")
+        
         time.sleep(screenshot_interval)
+    
     print(f"Stream processing stopped for {stream_id}")
+

@@ -344,6 +344,82 @@ def submit_floorplan():
     }), 201
 
 
+@app.route("/streams/<stream_id>/seat-mappings", methods=["POST"])
+def save_seat_mappings(stream_id):
+    """Save camera coordinate mappings for seats."""
+    import json
+    print("stream_id", stream_id)
+    if stream_id not in active_streams:
+        return jsonify({"error": "Stream not found"}), 404
+    
+    data = request.get_json()
+    mappings = data.get("mappings", {})
+    
+    if not mappings:
+        return jsonify({"error": "No mappings provided"}), 400
+    
+    # Update active_streams with camera coordinates
+    stream_info = active_streams[stream_id]
+    updated_seats = []
+    
+    for seat in stream_info.get("coordinates", []):
+        seat_id = seat.get("id")
+        if seat_id and seat_id in mappings and mappings[seat_id]:
+            # Add camera coordinates to existing seat
+            camera_coords = mappings[seat_id]
+            updated_seat = {
+                **seat,
+                "camera_x": camera_coords.get("x", 0),
+                "camera_y": camera_coords.get("y", 0),
+                "camera_width": camera_coords.get("width", 0),
+                "camera_height": camera_coords.get("height", 0)
+            }
+            updated_seats.append(updated_seat)
+        else:
+            updated_seats.append(seat)
+    
+    # Update in-memory stream info
+    active_streams[stream_id]["coordinates"] = updated_seats
+    
+    # Store in MongoDB if available (only update floorplans and streams, not a separate seat_mappings collection)
+    if MONGO_AVAILABLE and mongo:
+        print("mongo is available")
+        try:
+            # Update the floorplans collection with camera coordinates
+            floorplan_id = stream_info.get("floorplan_id")
+            if floorplan_id:
+                mongo.db.floorplans.update_one(
+                    {"_id": floorplan_id},
+                    {"$set": {"seats": updated_seats}}
+                )
+            
+            # Update streams collection
+            mongo.db.streams.update_one(
+                {"_id": stream_id},
+                {"$set": {"coordinates": updated_seats}}
+            )
+            
+            print(f"Seat mappings saved for stream {stream_id}: {len(mappings)} mappings")
+            print(f"Updated seats with camera coordinates:")
+            for seat in updated_seats:
+                if seat.get("camera_x"):
+                    print(f"  - {seat.get('label')}: camera({seat.get('camera_x')},{seat.get('camera_y')},{seat.get('camera_width')},{seat.get('camera_height')})")
+            
+        except Exception as e:
+            print(f"Failed to store seat mappings in MongoDB: {e}")
+            return jsonify({"error": str(e)}), 500
+    
+    print(f"In-memory stream {stream_id} coordinates updated: {len(updated_seats)} seats")
+    
+    return jsonify({
+        "message": "Seat mappings saved successfully",
+        "stream_id": stream_id,
+        "mappings_count": len(mappings),
+        "updated_seats": updated_seats,
+        "stored_in_db": MONGO_AVAILABLE
+    })
+
+
 @app.route("/floorplans", methods=["GET"])
 def get_floorplans():
     """Get all uploaded floorplans."""
@@ -492,6 +568,61 @@ def manual_capture(stream_id):
         "seats": results
     })
 
+@app.route("/streams/<stream_id>/frame", methods=["GET"])
+def get_stream_frame(stream_id):
+    """Get a single frame from a stream as base64 for display."""
+    if stream_id not in active_streams:
+        return jsonify({"error": "Stream not found"}), 404
+    
+    stream_url = active_streams[stream_id]["url"]
+    frame = capture_frame_from_stream(stream_url)
+    
+    if frame is None:
+        return jsonify({"error": "Failed to capture frame"}), 500
+    
+    # Convert frame to JPEG base64
+    _, buffer = cv2.imencode('.jpg', frame)
+    frame_base64 = base64.b64encode(buffer).decode('utf-8')
+    
+    # Get stream info including seats
+    stream_info = active_streams[stream_id]
+    
+    return jsonify({
+        "stream_id": stream_id,
+        "stream_name": stream_info.get("name", ""),
+        "stream_url": stream_url,
+        "frame": frame_base64,
+        "width": frame.shape[1],
+        "height": frame.shape[0],
+        "seats": stream_info.get("coordinates", []),
+        "timestamp": datetime.now().isoformat()
+    })
+
+@app.route("/frame-from-url", methods=["POST"])
+def get_frame_from_url():
+    """Get a single frame from any stream URL as base64."""
+    data = request.get_json()
+    stream_url = data.get("url", "")
+    
+    if not stream_url:
+        return jsonify({"error": "Stream URL is required"}), 400
+    
+    frame = capture_frame_from_stream(stream_url)
+    
+    if frame is None:
+        return jsonify({"error": "Failed to capture frame from URL"}), 500
+    
+    # Convert frame to JPEG base64
+    _, buffer = cv2.imencode('.jpg', frame)
+    frame_base64 = base64.b64encode(buffer).decode('utf-8')
+    
+    return jsonify({
+        "frame": frame_base64,
+        "width": frame.shape[1],
+        "height": frame.shape[0],
+        "timestamp": datetime.now().isoformat()
+    })
+
 @app.route("/occupancy", methods=["GET"])
 def get_occupancy():
     """Get current occupancy status for all streams."""
@@ -514,35 +645,7 @@ def get_stream_occupancy(stream_id):
         "coordinates": DUMMY_COORDINATES
     })
 
-@app.route("/occupancy/history", methods=["GET"])
-def get_occupancy_history():
-    """Get occupancy history from MongoDB."""
-    if not MONGO_AVAILABLE or not mongo:
-        return jsonify({"error": "MongoDB not available", "history": []}), 200
-    
-    try:
-        # Get optional query params
-        stream_id = request.args.get("stream_id")
-        limit = int(request.args.get("limit", 100))
-        
-        query = {}
-        if stream_id:
-            query["stream_id"] = stream_id
-        
-        history = list(
-            mongo.db.occupancy_history
-            .find(query, {"_id": 0})
-            .sort("timestamp", -1)
-            .limit(limit)
-        )
-        
-        return jsonify({
-            "history": history,
-            "count": len(history),
-            "limit": limit
-        })
-    except Exception as e:
-        return jsonify({"error": str(e), "history": []}), 500
+# Removed /occupancy/history endpoint - occupancy history is not stored in DB
 
 if __name__ == "__main__":
     print("=" * 60)

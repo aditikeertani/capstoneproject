@@ -77,6 +77,43 @@ export async function captureStream(streamId) {
   return res.json();
 }
 
+/**
+ * Get a single frame from a stream as base64
+ */
+export async function getStreamFrame(streamId) {
+  const res = await fetch(`${BASE_URL}/streams/${streamId}/frame`);
+  if (!res.ok) throw new Error("Failed to get stream frame");
+  return res.json();
+}
+
+/**
+ * Get a frame from any stream URL (doesn't require stream to be registered)
+ */
+export async function getFrameFromUrl(url) {
+  const res = await fetch(`${BASE_URL}/frame-from-url`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+  if (!res.ok) throw new Error("Failed to get frame from URL");
+  return res.json();
+}
+
+/**
+ * Save seat mappings (camera coordinates) for a stream
+ * @param {string} streamId - The stream ID
+ * @param {object} mappings - Object mapping seat IDs to camera coordinates { seatId: { x, y, width, height } }
+ */
+export async function saveSeatMappings(streamId, mappings) {
+  const res = await fetch(`${BASE_URL}/streams/${streamId}/seat-mappings`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mappings }),
+  });
+  if (!res.ok) throw new Error("Failed to save seat mappings");
+  return res.json();
+}
+
 // Floorplan
 
 /**
