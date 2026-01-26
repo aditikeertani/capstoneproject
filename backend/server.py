@@ -237,6 +237,113 @@ def upload_floorplan():
         "stored_in_db": MONGO_AVAILABLE
     })
 
+@app.route("/submit-floorplan", methods=["POST"])
+def submit_floorplan():
+    """Submit a floorplan with seats and associate with a stream."""
+    import json
+    
+    if "floorplan" not in request.files:
+        return jsonify({"error": "No floorplan image uploaded"}), 400
+    
+    file = request.files["floorplan"]
+    seats_json = request.form.get("seats", "[]")
+    stream_url = request.form.get("stream_url", "")
+    stream_name = request.form.get("stream_name", "")
+    image_width = int(request.form.get("image_width", 0))
+    image_height = int(request.form.get("image_height", 0))
+    
+    if not stream_url:
+        return jsonify({"error": "Stream URL is required"}), 400
+    
+    try:
+        seats = json.loads(seats_json)
+    except:
+        return jsonify({"error": "Invalid seats data"}), 400
+    
+    # Save floorplan image
+    floorplan_dir = os.path.join(BACKEND_DIR, 'floorplans')
+    os.makedirs(floorplan_dir, exist_ok=True)
+    
+    floorplan_id = str(uuid.uuid4())[:8]
+    stream_id = str(uuid.uuid4())[:8]
+    filename = f"floorplan_{floorplan_id}_{file.filename}"
+    filepath = os.path.join(floorplan_dir, filename)
+    file.save(filepath)
+    
+    # Create stream info with custom seat coordinates
+    stream_info = {
+        "id": stream_id,
+        "url": stream_url,
+        "name": stream_name or f"Stream {len(active_streams) + 1}",
+        "active": True,
+        "created_at": datetime.now().isoformat(),
+        "floorplan_id": floorplan_id,
+        "coordinates": seats
+    }
+    
+    active_streams[stream_id] = stream_info
+    
+    # Store in MongoDB if available
+    if MONGO_AVAILABLE and mongo:
+        try:
+            with open(filepath, 'rb') as f:
+                file_content = f.read()
+            
+            # Store floorplan with seats
+            floorplan_doc = {
+                "_id": floorplan_id,
+                "filename": file.filename,
+                "stored_filename": filename,
+                "filepath": filepath,
+                "content_type": file.content_type,
+                "size_bytes": len(file_content),
+                "image_data": base64.b64encode(file_content).decode('utf-8'),
+                "image_width": image_width,
+                "image_height": image_height,
+                "uploaded_at": datetime.now().isoformat(),
+                "stream_id": stream_id,
+                "stream_url": stream_url,
+                "stream_name": stream_name,
+                "seats": seats
+            }
+            mongo.db.floorplans.insert_one(floorplan_doc)
+            
+            # Store stream config
+            stream_doc = {**stream_info, "_id": stream_id}
+            mongo.db.streams.update_one(
+                {"_id": stream_id},
+                {"$set": stream_doc},
+                upsert=True
+            )
+            
+            print(f"Floorplan {floorplan_id} with {len(seats)} seats stored in MongoDB")
+            print(f"Stream {stream_id} created and associated")
+            
+        except Exception as e:
+            print(f"Failed to store in MongoDB: {e}")
+    
+    # Start background processing thread for this stream
+    thread = threading.Thread(
+        target=process_stream,
+        args=(stream_id, stream_url, active_streams, occupancy_data,
+              seats, SCREENSHOTS_DIR, SCREENSHOT_INTERVAL,
+              predict_occupancy, mongo, MONGO_AVAILABLE),
+        daemon=True
+    )
+    thread.start()
+    stream_threads[stream_id] = thread
+    
+    return jsonify({
+        "message": "Floorplan and stream configuration saved",
+        "floorplan_id": floorplan_id,
+        "stream_id": stream_id,
+        "stream_name": stream_name,
+        "stream_url": stream_url,
+        "seats_count": len(seats),
+        "stored_in_db": MONGO_AVAILABLE
+    }), 201
+
+
 @app.route("/floorplans", methods=["GET"])
 def get_floorplans():
     """Get all uploaded floorplans."""
