@@ -92,6 +92,7 @@ export async function uploadFloorplan(file) {
   });
   if (!res.ok) throw new Error("Upload failed");
   return res.json();
+
 }
 
 // Legacy alias
@@ -117,32 +118,8 @@ export async function getFloorplan(floorplanId) {
   return res.json();
 }
 
-/**
- * Get occupancy history from MongoDB
- * @param {string} streamId - Optional stream ID filter
- * @param {number} limit - Max records to return (default 100)
- */
-export async function getOccupancyHistory(streamId = null, limit = 100) {
-  let url = `${BASE_URL}/occupancy/history?limit=${limit}`;
-  if (streamId) url += `&stream_id=${streamId}`;
-  
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("Failed to get occupancy history");
+export async function getdata({ stream_id }) {
+  const res = await fetch(`${BASE_URL}/streams/${stream_id}/latest`);
+  if (!res.ok) throw new Error("Get data failed");
   return res.json();
 }
-
-export default {
-  ping,
-  getServerStatus,
-  getStreams,
-  getOccupancy,
-  getStreamOccupancy,
-  addStream,
-  removeStream,
-  captureStream,
-  uploadFloorplan,
-  assignStream,
-  getFloorplans,
-  getFloorplan,
-  getOccupancyHistory,
-};
