@@ -141,7 +141,6 @@ var Store = (function StoreClosure() {
         // add to store  
         var organisedEntry = this._organiseData(arguments[0], true);
         if (organisedEntry) {
-          // if it's the first datapoint initialize the extremas with it
           if (this._data.length === 0) {
             this._min = this._max = organisedEntry.value;
           }
@@ -174,7 +173,7 @@ var Store = (function StoreClosure() {
       return this;
     },
     removeData: function() {
-      // TODO: implement
+
     },
     setDataMax: function(max) {
       this._max = max;
@@ -397,10 +396,7 @@ var Canvas2dRenderer = (function Canvas2dRendererClosure() {
         } else {
           tpl = this._templates[radius];
         }
-        // value from minimum / value range
-        // => [0, 1]
         var templateAlpha = (value-min)/(max-min);
-        // this fixes #176: small values are not visible because globalAlpha < .01 cannot be read from imageData
         shadowCtx.globalAlpha = templateAlpha < .01 ? .01 : templateAlpha;
 
         shadowCtx.drawImage(tpl, rectX, rectY);
