@@ -25,3 +25,5 @@ yarn-error.log*
 /backend/db
 /backend/screenshots
 /backend/floorplans
+
+__pycache__
