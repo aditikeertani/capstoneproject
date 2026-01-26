@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 import cv2
+import av
 import base64
 import numpy as np
 from datetime import datetime
@@ -190,22 +191,32 @@ def predict_occupancy(image):
 # ============================================================================
 def capture_frame_from_stream(stream_url):
     """Capture a single frame from a video stream."""
-    try:
-        cap = cv2.VideoCapture(stream_url)
-        if not cap.isOpened():
-            print(f"Failed to open stream: {stream_url}")
-            return None
-        
-        ret, frame = cap.read()
-        cap.release()
-        
-        if not ret or frame is None:
-            return None
-        return frame
-        
-    except Exception as e:
-        print(f"Error capturing frame: {e}")
+    frame_img = None
+    video = av.open(stream_url, 'r')
+    print("Stream successfully opened!")
+    for packet in video.demux():
+        print(f"Demuxing packet {packet}")
+        for frame in packet.decode():
+            print(f"Decoding frame {frame}")
+            if type(frame) is av.video.frame.VideoFrame:
+                if frame.key_frame:
+                    print(f"Ooooo, that's a-keyframe!")
+                    frame_img = frame.to_ndarray()
+                    print("Do we get here?")
+                    # Close Connection to RTSP Source
+                    break
+        if frame_img is not None:
+            break
+    
+    print("So we got here,")
+    print(f"and i had this image {frame_img}")
+
+    if not video or frame_img is None:
         return None
+    return frame_img
+    #except Exception as e:
+    #    print(f"Error capturing frame: {e}")
+    #    return None
 
 def process_stream(stream_id, stream_url):
     """Background thread: capture frames and run detection every 30 seconds."""
