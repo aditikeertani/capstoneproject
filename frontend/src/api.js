@@ -92,6 +92,33 @@ export async function uploadFloorplan(file) {
   });
   if (!res.ok) throw new Error("Upload failed");
   return res.json();
+
+}
+
+/**
+ * Submit floorplan with seats and associate with a stream
+ * @param {File} imageFile - The floorplan image file
+ * @param {Array} seats - Array of seat objects with { id, x, y, width, height, label }
+ * @param {string} streamUrl - RTSP stream URL
+ * @param {string} streamName - Display name for the stream
+ * @param {number} imageWidth - Original image width
+ * @param {number} imageHeight - Original image height
+ */
+export async function submitFloorplanWithSeats(imageFile, seats, streamUrl, streamName, imageWidth, imageHeight) {
+  const formData = new FormData();
+  formData.append("floorplan", imageFile);
+  formData.append("seats", JSON.stringify(seats));
+  formData.append("stream_url", streamUrl);
+  formData.append("stream_name", streamName);
+  formData.append("image_width", imageWidth);
+  formData.append("image_height", imageHeight);
+
+  const res = await fetch(`${BASE_URL}/submit-floorplan`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) throw new Error("Failed to submit floorplan");
+  return res.json();
 }
 
 /**
@@ -143,17 +170,9 @@ export async function getFloorplan(floorplanId) {
   return res.json();
 }
 
-/**
- * Get occupancy history from MongoDB
- * @param {string} streamId - Optional stream ID filter
- * @param {number} limit - Max records to return (default 100)
- */
-export async function getOccupancyHistory(streamId = null, limit = 100) {
-  let url = `${BASE_URL}/occupancy/history?limit=${limit}`;
-  if (streamId) url += `&stream_id=${streamId}`;
-  
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("Failed to get occupancy history");
+export async function getdata({ stream_id }) {
+  const res = await fetch(`${BASE_URL}/streams/${stream_id}/latest`);
+  if (!res.ok) throw new Error("Get data failed");
   return res.json();
 }
 
