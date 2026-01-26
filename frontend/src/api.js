@@ -187,7 +187,7 @@ export async function getdata({ stream_id }) {
   return res.json();
 }
 
-export default {
+const apiExports = {
   ping,
   getServerStatus,
   getStreams,
@@ -202,3 +202,5 @@ export default {
   getFloorplans,
   getFloorplan,
 };
+
+export default apiExports;

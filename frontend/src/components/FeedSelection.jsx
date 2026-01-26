@@ -23,7 +23,7 @@ export default function FeedSelection() {
   // Load available streams on mount
   useEffect(() => {
     loadStreams();
-  }, []);
+  }, [selectedStreamId]);
 
   const loadStreams = async () => {
     try {

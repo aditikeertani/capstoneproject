@@ -2,13 +2,22 @@ import React, { useState } from "react";
 import { ping } from "./api";
 import FloorplanUpload from "./components/FloorplanUpload";
 import StreamAssignment from "./components/StreamAssignment";
-import HeatmapOverlay from "./heatmap_ui/HeatmapOverlay";
-import HeatmapTest from "./heatmap_ui/HeatmapTest";
 import FloorplanDesigner from "./components/FloorplanDesigner";
 import FeedSelection from "./components/FeedSelection";
 
 export default function App() {
   const [pingResult, setPingResult] = useState("");
+  const [activeTab, setActiveTab] = useState("dashboard");
+
+  const tabStyle = (tab) => ({
+    padding: "10px 16px",
+    border: "none",
+    backgroundColor: activeTab === tab ? "#007bff" : "#f0f0f0",
+    color: activeTab === tab ? "white" : "black",
+    cursor: "pointer",
+    fontSize: "14px",
+    fontWeight: activeTab === tab ? "bold" : "normal",
+  });
 
   const onPing = async () => {
     setPingResult("Pinging...");
@@ -19,11 +28,6 @@ export default function App() {
       setPingResult("❌ Failed to reach backend. Is Flask running?");
     }
   };
-
-   const detectionPoints = [
-    { x: 320, y: 240, value: 0.9 },
-    { x: 200, y: 180, value: 0.7 }
-  ];
 
 
  return (
@@ -37,6 +41,9 @@ export default function App() {
         </button>
         <button style={tabStyle("designer")} onClick={() => setActiveTab("designer")}>
           Floorplan Designer
+        </button>
+        <button style={tabStyle("feeds")} onClick={() => setActiveTab("feeds")}>
+          Feed Selection
         </button>
       </div>
 
@@ -55,6 +62,8 @@ export default function App() {
           </div>
         </>
       )}
+
+      {activeTab === "feeds" && <FeedSelection />}
 
       {activeTab === "designer" && <FloorplanDesigner />}
     </div>
