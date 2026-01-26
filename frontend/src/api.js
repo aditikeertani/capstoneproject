@@ -1,4 +1,4 @@
-const BASE_URL = "http://127.0.0.1:5000";
+const BASE_URL = "http://127.0.0.1:5001";
 
 export async function ping() {
   const res = await fetch(`${BASE_URL}/`);
@@ -94,6 +94,32 @@ export async function uploadFloorplan(file) {
   return res.json();
 }
 
+/**
+ * Submit floorplan with seats and associate with a stream
+ * @param {File} imageFile - The floorplan image file
+ * @param {Array} seats - Array of seat objects with { id, x, y, width, height, label }
+ * @param {string} streamUrl - RTSP stream URL
+ * @param {string} streamName - Display name for the stream
+ * @param {number} imageWidth - Original image width
+ * @param {number} imageHeight - Original image height
+ */
+export async function submitFloorplanWithSeats(imageFile, seats, streamUrl, streamName, imageWidth, imageHeight) {
+  const formData = new FormData();
+  formData.append("floorplan", imageFile);
+  formData.append("seats", JSON.stringify(seats));
+  formData.append("stream_url", streamUrl);
+  formData.append("stream_name", streamName);
+  formData.append("image_width", imageWidth);
+  formData.append("image_height", imageHeight);
+
+  const res = await fetch(`${BASE_URL}/submit-floorplan`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) throw new Error("Failed to submit floorplan");
+  return res.json();
+}
+
 // Legacy alias
 export const assignStream = addStream;
 
@@ -141,6 +167,7 @@ export default {
   removeStream,
   captureStream,
   uploadFloorplan,
+  submitFloorplanWithSeats,
   assignStream,
   getFloorplans,
   getFloorplan,
