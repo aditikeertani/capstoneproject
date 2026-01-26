@@ -164,5 +164,4 @@ export default {
   assignStream,
   getFloorplans,
   getFloorplan,
-  getOccupancyHistory,
 };
