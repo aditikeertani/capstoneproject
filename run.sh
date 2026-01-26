@@ -1,10 +1,17 @@
+#!/bin/bash
+
+mkdir -p backend/db
+
 echo "Starting MongoDB..."
 mongod --dbpath ./backend/db &
-sleep 5 #gives Mongo time to get up and running
+sleep 5
+
 echo "Starting Flask..."
-python ./backend/server.py &
-sleep 5 #gives Flask time to get up and running
+(cd backend && source venv/bin/activate && python server.py) &
+sleep 5
+
 echo "Starting React..."
-cd ./frontend
+cd frontend
 npm start
+
 wait

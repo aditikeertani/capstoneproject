@@ -3,6 +3,7 @@ import { ping } from "./api";
 import FloorplanUpload from "./components/FloorplanUpload";
 import StreamAssignment from "./components/StreamAssignment";
 import FloorplanDesigner from "./components/FloorplanDesigner";
+import FeedSelection from "./components/FeedSelection";
 
 export default function App() {
   const [pingResult, setPingResult] = useState("");
@@ -40,6 +41,9 @@ export default function App() {
         <button style={tabStyle("designer")} onClick={() => setActiveTab("designer")}>
           Floorplan Designer
         </button>
+        <button style={tabStyle("feed")} onClick={() => setActiveTab("feed")}>
+          Feed Selection
+        </button>
       </div>
 
       {activeTab === "dashboard" && (
@@ -59,6 +63,7 @@ export default function App() {
       )}
 
       {activeTab === "designer" && <FloorplanDesigner />}
+      {activeTab === "feed" && <FeedSelection />}
     </div>
   );
 }
