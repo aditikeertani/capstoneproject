@@ -16,6 +16,7 @@ export async function uploadFloorplan(file) {
   });
   if (!res.ok) throw new Error("Upload failed");
   return res.json();
+
 }
 
 export async function assignStream(payload) {
@@ -25,5 +26,11 @@ export async function assignStream(payload) {
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error("Assign stream failed");
+  return res.json();
+}
+
+export async function getdata({ stream_id }) {
+  const res = await fetch(`${BASE_URL}/streams/${stream_id}/latest`);
+  if (!res.ok) throw new Error("Get data failed");
   return res.json();
 }
