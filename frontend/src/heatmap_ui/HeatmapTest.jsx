@@ -62,13 +62,14 @@ export default function HeatmapTest() {
     return () => clearInterval(timer);
   }, [autoRefresh, selectedStreamId, fetchSnapshot]);
 
-  // Build the image source from the backend response
-  const imageSrc = snapshot?.frame
+  // Prefer the uploaded floorplan over the live camera frame
+  const floorplanSrc = snapshot?.floorplan
+    ? `data:image/png;base64,${snapshot.floorplan}`
+    : null;
+  const frameSrc = snapshot?.frame
     ? `data:image/jpeg;base64,${snapshot.frame}`
     : null;
-
-  const displayWidth = snapshot?.frame_width || 640;
-  const displayHeight = snapshot?.frame_height || 480;
+  const imageSrc = floorplanSrc || frameSrc;
 
   return (
     <div>
@@ -149,8 +150,8 @@ export default function HeatmapTest() {
       ) : (
         <HeatmapOverlay
           snapshot={snapshot}
-          width={Math.min(displayWidth, 960)}
-          height={Math.min(displayHeight, 720)}
+          width={960}
+          height={540}
           imageSrc={imageSrc}
         />
       )}

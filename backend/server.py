@@ -35,8 +35,9 @@ except Exception as e:
 
 # Configuration
 SCREENSHOT_INTERVAL = 30  # seconds between screenshots
-NUM_CLASSES = 3
+NUM_CLASSES = 3  # model still has 3 output neurons
 IMG_SIZE = 224
+# 3-class status: model output maps directly to these
 CLASS_NAMES = ["Unoccupied", "Unattended", "Occupied"]
 
 # Model paths - will check in order
@@ -148,15 +149,35 @@ def predict_occupancy(image):
             probs = torch.nn.functional.softmax(outputs, dim=1)
             confidence, predicted_idx = torch.max(probs, 1)
         
-        class_idx = predicted_idx.item()
+        raw_class_idx = predicted_idx.item()
         conf = confidence.item()
+        
+        # Log ALL class probabilities for debugging
+        all_probs = probs[0].cpu().numpy()
+        prob_str = " | ".join(
+            f"{CLASS_NAMES[i]}: {all_probs[i]*100:.1f}%"
+            for i in range(len(CLASS_NAMES))
+        )
+        print(f"  📊 Model probabilities: {prob_str}")
+        
+        # Save the crop for visual debugging
+        debug_dir = os.path.join(BACKEND_DIR, 'debug_crops')
+        os.makedirs(debug_dir, exist_ok=True)
+        debug_path = os.path.join(debug_dir, f"crop_{datetime.now().strftime('%H%M%S')}.jpg")
+        cv2.imwrite(debug_path, image)
+        
+        class_idx = raw_class_idx
         
         return {
             "class_index": class_idx,
             "class_name": CLASS_NAMES[class_idx],
             "confidence": round(conf, 4),
-            "is_occupied": class_idx == 2,
-            "is_mock": False
+            "is_occupied": class_idx == 2,  # only truly occupied
+            "is_mock": False,
+            "all_probabilities": {
+                CLASS_NAMES[i]: round(float(all_probs[i]), 4)
+                for i in range(len(CLASS_NAMES))
+            }
         }
         
     except Exception as e:
@@ -689,6 +710,40 @@ def get_stream_latest(stream_id):
     except Exception as e:
         print(f"Frame capture failed for heatmap: {e}")
 
+    # Retrieve the floorplan image for this stream
+    floorplan_base64 = None
+    floorplan_width = 0
+    floorplan_height = 0
+    floorplan_id = stream_info.get("floorplan_id")
+    if floorplan_id:
+        # Try MongoDB first
+        if MONGO_AVAILABLE and mongo:
+            try:
+                fp_doc = mongo.db.floorplans.find_one({"_id": floorplan_id})
+                if fp_doc:
+                    floorplan_base64 = fp_doc.get("image_data")
+                    floorplan_width = fp_doc.get("image_width", 0)
+                    floorplan_height = fp_doc.get("image_height", 0)
+            except Exception as e:
+                print(f"Failed to load floorplan from MongoDB: {e}")
+
+        # Fallback: load from disk if not found in MongoDB
+        if not floorplan_base64:
+            floorplan_dir = os.path.join(BACKEND_DIR, 'floorplans')
+            try:
+                for fname in os.listdir(floorplan_dir):
+                    if fname.startswith(f"floorplan_{floorplan_id}_"):
+                        fpath = os.path.join(floorplan_dir, fname)
+                        with open(fpath, 'rb') as f:
+                            floorplan_base64 = base64.b64encode(f.read()).decode('utf-8')
+                        # Determine image dimensions from the file
+                        fp_img = cv2.imread(fpath)
+                        if fp_img is not None:
+                            floorplan_height, floorplan_width = fp_img.shape[:2]
+                        break
+            except Exception as e:
+                print(f"Failed to load floorplan from disk: {e}")
+
     return jsonify({
         "stream_id": stream_id,
         "stream_name": stream_info.get("name", ""),
@@ -697,6 +752,9 @@ def get_stream_latest(stream_id):
         "frame": frame_base64,
         "frame_width": frame_width,
         "frame_height": frame_height,
+        "floorplan": floorplan_base64,
+        "floorplan_width": floorplan_width,
+        "floorplan_height": floorplan_height,
     })
 
 # Removed /occupancy/history endpoint - occupancy history is not stored in DB

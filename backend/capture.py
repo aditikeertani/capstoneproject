@@ -76,6 +76,8 @@ def process_stream(stream_id, stream_url, active_streams, occupancy_data,
                     camera_width = coord.get("camera_width")
                     camera_height = coord.get("camera_height")
                     
+                    print(f"  🔍 Seat {coord.get('label', seat_id)}: camera_x={camera_x}, camera_y={camera_y}, camera_w={camera_width}, camera_h={camera_height}")
+                    
                     # If camera coordinates exist, crop that region for prediction
                     if all(v is not None and v > 0 for v in [camera_x, camera_y, camera_width, camera_height]):
                         # Ensure coordinates are within frame bounds
@@ -83,6 +85,8 @@ def process_stream(stream_id, stream_url, active_streams, occupancy_data,
                         y1 = max(0, int(camera_y))
                         x2 = min(frame_width, int(camera_x + camera_width))
                         y2 = min(frame_height, int(camera_y + camera_height))
+                        
+                        print(f"  ✅ Cropping [{y1}:{y2}, {x1}:{x2}] from {frame_width}x{frame_height} frame")
                         
                         # Crop the region
                         cropped_frame = frame[y1:y2, x1:x2]
@@ -98,6 +102,7 @@ def process_stream(stream_id, stream_url, active_streams, occupancy_data,
                     else:
                         # No camera coordinates, use full frame prediction
                         prediction = predict_fn(frame)
+                        print(f"  ❌ No camera coords → full frame prediction")
                         print(f"Predicted seat {coord.get('label', seat_id)}: {prediction['class_name']} (full frame - no mapping)")
                     
                     # Build seat result with all coordinates
