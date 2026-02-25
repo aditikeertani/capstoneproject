@@ -181,8 +181,12 @@ export async function getFloorplan(floorplanId) {
   return res.json();
 }
 
-export async function getdata({ stream_id }) {
-  const res = await fetch(`${BASE_URL}/streams/${stream_id}/latest`);
+/**
+ * Get latest occupancy snapshot for a stream (used by heatmap)
+ * @param {string} streamId - The stream ID
+ */
+export async function getdata(streamId) {
+  const res = await fetch(`${BASE_URL}/streams/${streamId}/latest`);
   if (!res.ok) throw new Error("Get data failed");
   return res.json();
 }
@@ -201,6 +205,7 @@ const apiExports = {
   assignStream,
   getFloorplans,
   getFloorplan,
+  getdata,
 };
 
 export default apiExports;

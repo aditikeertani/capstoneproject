@@ -645,6 +645,60 @@ def get_stream_occupancy(stream_id):
         "coordinates": DUMMY_COORDINATES
     })
 
+@app.route("/streams/<stream_id>/latest", methods=["GET"])
+def get_stream_latest(stream_id):
+    """Get the latest occupancy snapshot for a stream (used by heatmap)."""
+    if stream_id not in active_streams:
+        return jsonify({"error": "Stream not found"}), 404
+
+    stream_info = active_streams[stream_id]
+    seats_dict = occupancy_data.get(stream_id, {})
+
+    # Convert seat dict to array
+    if isinstance(seats_dict, dict):
+        seats_list = list(seats_dict.values())
+    else:
+        seats_list = seats_dict
+
+    # If no occupancy data yet, build from coordinates
+    if not seats_list:
+        seats_list = []
+        for coord in stream_info.get("coordinates", DUMMY_COORDINATES):
+            seats_list.append({
+                "id": coord.get("id"),
+                "x": coord.get("x", 0),
+                "y": coord.get("y", 0),
+                "width": 640,
+                "height": 480,
+                "label": coord.get("label", ""),
+                "status": 0,
+                "confidence": 0,
+            })
+
+    # Try to capture a live frame for the heatmap background
+    frame_base64 = None
+    frame_width = 640
+    frame_height = 480
+    try:
+        stream_url = stream_info["url"]
+        frame = capture_frame_from_stream(stream_url)
+        if frame is not None:
+            _, buffer = cv2.imencode('.jpg', frame)
+            frame_base64 = base64.b64encode(buffer).decode('utf-8')
+            frame_height, frame_width = frame.shape[:2]
+    except Exception as e:
+        print(f"Frame capture failed for heatmap: {e}")
+
+    return jsonify({
+        "stream_id": stream_id,
+        "stream_name": stream_info.get("name", ""),
+        "timestamp": datetime.now().isoformat(),
+        "seats": seats_list,
+        "frame": frame_base64,
+        "frame_width": frame_width,
+        "frame_height": frame_height,
+    })
+
 # Removed /occupancy/history endpoint - occupancy history is not stored in DB
 
 if __name__ == "__main__":

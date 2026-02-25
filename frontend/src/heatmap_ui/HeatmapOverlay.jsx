@@ -1,19 +1,37 @@
 import React, { useEffect, useMemo, useRef } from "react";
 import h337 from './heatmap.js';
-  
-    
-function turnt(v){
+
+/**
+ * Clamp a value to [0, 1].
+ */
+function clamp01(v) {
   return Math.max(0, Math.min(1, v));
 }
 
+/**
+ * Convert the backend seat array into heatmap data-points.
+ *
+ * Each seat from the backend looks like:
+ *   { id, x, y, width, height, label, status, confidence }
+ *
+ * where (x, y) are pixel coordinates within the camera frame,
+ * and (width, height) are the frame dimensions.
+ *
+ * status: 0 = unoccupied, 1 = unattended, 2 = occupied
+ * We generate a heatmap point for seats with status >= 1 (occupied or unattended).
+ */
 function seatsToHeatmapPoints(snapshot, displayW, displayH) {
   if (!snapshot?.seats?.length) return [];
 
   return snapshot.seats
-    .filter(s => Number(s.status) === 1)
+    .filter(s => Number(s.status) >= 1) // show occupied & unattended
     .map(s => {
-      const nx = turnt(Number(s.x) / Number(s.width));
-      const ny = turnt(Number(s.y) / Number(s.height));
+      // Normalise seat (x, y) by the frame dimensions
+      const frameW = Number(s.width) || snapshot.frame_width || displayW;
+      const frameH = Number(s.height) || snapshot.frame_height || displayH;
+      const nx = clamp01(Number(s.x) / frameW);
+      const ny = clamp01(Number(s.y) / frameH);
+
       return {
         x: Math.round(nx * displayW),
         y: Math.round(ny * displayH),
@@ -23,10 +41,10 @@ function seatsToHeatmapPoints(snapshot, displayW, displayH) {
 }
 
 export default function HeatmapOverlay({
-  snapshot,                 // backend JSON: {stream_id, timestamp, screenshot_path, seats:[...]}
+  snapshot,                 // backend JSON from /streams/<id>/latest
   width = 640,
   height = 480,
-  imageSrc = "/frame.jpg",  
+  imageSrc = null,          // data-URI or URL; null → plain dark background
 }) {
   const containerRef = useRef(null);
   const heatmapRef = useRef(null);
@@ -36,15 +54,15 @@ export default function HeatmapOverlay({
     [snapshot, width, height]
   );
 
-    useEffect(() => {
+  // Create the heatmap instance once
+  useEffect(() => {
     if (!containerRef.current) return;
 
-    // creation of heatmap once
     heatmapRef.current = h337.create({
       container: containerRef.current,
       radius: 40,
       maxOpacity: 0.6,
-      blur: 0.85
+      blur: 0.85,
     });
 
     return () => {
@@ -52,28 +70,51 @@ export default function HeatmapOverlay({
     };
   }, []);
 
+  // Update heatmap data when points change
   useEffect(() => {
-    if (!heatmapRef.current || !points) return;
+    if (!heatmapRef.current) return;
 
-    // updating heatmap when the data changes
     heatmapRef.current.setData({
       max: 1,
-      data: points
+      data: points,
     });
   }, [points]);
 
-  const frameW = snapshot?.seats?.[0]?.width ?? 1920;
-  const frameH = snapshot?.seats?.[0]?.height ?? 1080;
+  // Determine the "native" frame size for the SVG viewBox
+  const frameW = snapshot?.frame_width
+    || (snapshot?.seats?.[0]?.width)
+    || width;
+  const frameH = snapshot?.frame_height
+    || (snapshot?.seats?.[0]?.height)
+    || height;
 
-    return (
+  return (
     <div style={{ position: "relative", width, height }}>
-      <img
-        src={imageSrc}
-        alt="frame"
-        style={{ width: "100%", height: "100%", display: "block" }}
-      />
+      {/* Background image (live frame) or a dark placeholder */}
+      {imageSrc ? (
+        <img
+          src={imageSrc}
+          alt="Camera frame"
+          style={{ width: "100%", height: "100%", display: "block", objectFit: "contain" }}
+        />
+      ) : (
+        <div
+          style={{
+            width: "100%",
+            height: "100%",
+            backgroundColor: "#1a1a2e",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "#555",
+            fontSize: 14,
+          }}
+        >
+          {snapshot ? "No frame available" : "Waiting for data…"}
+        </div>
+      )}
 
-      {/* Heatmap canvas goes inside here (heatmap.js appends a canvas) */}
+      {/* Heatmap canvas layer (heatmap.js appends a canvas here) */}
       <div
         ref={containerRef}
         style={{
@@ -84,36 +125,45 @@ export default function HeatmapOverlay({
         }}
       />
 
-      {/* SVG overlay for seats/labels */}
+      {/* SVG overlay for seat markers / labels */}
       <svg
         width={width}
         height={height}
         viewBox={`0 0 ${frameW} ${frameH}`}
+        preserveAspectRatio="xMidYMid meet"
         style={{
           position: "absolute",
           inset: 0,
-          pointerEvents: "auto", // allow hover/click
+          pointerEvents: "auto",
         }}
       >
         {snapshot?.seats?.map(seat => {
-          const occupied = Number(seat.status) === 1;
+          const status = Number(seat.status);
+          const occupied = status >= 1;
+
           return (
             <g key={seat.id} opacity={occupied ? 1 : 0.5}>
-              {/* seat marker */}
+              {/* Seat marker */}
               <circle
                 cx={seat.x}
                 cy={seat.y}
                 r={20}
-                fill={occupied ? "rgba(255,0,0,0.35)" : "rgba(0,0,0,0.15)"}
+                fill={
+                  status === 2
+                    ? "rgba(255,0,0,0.35)"      // occupied → red
+                    : status === 1
+                    ? "rgba(255,165,0,0.35)"     // unattended → orange
+                    : "rgba(0,0,0,0.15)"         // unoccupied → faint
+                }
                 stroke="rgba(0,0,0,0.35)"
                 strokeWidth="2"
               />
-              {/* label */}
+              {/* Label */}
               <text
                 x={seat.x + 26}
                 y={seat.y + 6}
                 fontSize="26"
-                fill="rgba(0,0,0,0.85)"
+                fill="rgba(255,255,255,0.85)"
               >
                 {seat.label}
               </text>
@@ -123,5 +173,4 @@ export default function HeatmapOverlay({
       </svg>
     </div>
   );
-
 }

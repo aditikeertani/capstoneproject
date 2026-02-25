@@ -22,7 +22,7 @@ def capture_frame_from_stream(stream_url):
             print(f"Decoding frame {frame}")
             if type(frame) is av.video.frame.VideoFrame:
                 if frame.key_frame:
-                    frame_img = frame.to_ndarray()
+                    frame_img = frame.to_ndarray(format='bgr24')
                     # Close Connection to RTSP Source
                     break
         if frame_img is not None:
