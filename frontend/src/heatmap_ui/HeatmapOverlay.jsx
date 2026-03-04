@@ -27,7 +27,7 @@ function seatsToHeatmapPoints(snapshot, displayW, displayH, useFloorplan) {
     : (snapshot.frame_height || displayH);
 
   return snapshot.seats
-    .filter(s => Number(s.status) >= 1)
+    .filter(s => Number(s.status) === 2)
     .map(s => {
       let nx, ny;
 
@@ -179,7 +179,7 @@ export default function HeatmapOverlay({
       >
         {snapshot?.seats?.map(seat => {
           const status = Number(seat.status);
-          const occupied = status >= 1;
+          const occupied = status === 2;
 
           let cx, cy;
           if (useFloorplan) {
@@ -200,7 +200,7 @@ export default function HeatmapOverlay({
           }
 
           return (
-            <g key={seat.id} opacity={occupied ? 1 : 0.4}>
+            <g key={seat.id} opacity={1}>
               {/* Seat marker */}
               <circle
                 cx={cx}
@@ -209,10 +209,14 @@ export default function HeatmapOverlay({
                 fill={
                   occupied
                     ? "rgba(255,60,60,0.45)"       // occupied → red
-                    : "rgba(100,100,100,0.2)"       // unoccupied → grey
+                    : "rgba(60,255,60,0.25)"       // unoccupied → green
                 }
-                stroke={occupied ? "rgba(255,255,255,0.6)" : "rgba(0,0,0,0.2)"}
-                strokeWidth="2"
+                stroke={
+                  occupied 
+                    ? "rgba(255,60,60,0.9)" 
+                    : "rgba(60,255,60,0.7)"
+                }
+                strokeWidth="3"
               />
               {/* Label */}
               <text

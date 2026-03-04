@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 
 class ConvBlock(nn.Module):
-    """A block of Conv2D -> BatchNorm -> ReLU."""
     def __init__(self, in_channels, out_channels, kernel_size, stride, padding):
         super(ConvBlock, self).__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
@@ -12,54 +11,36 @@ class ConvBlock(nn.Module):
     def forward(self, x):
         return self.relu(self.bn(self.conv(x)))
 
-class YOLOBackbone(nn.Module):
+class Backbone(nn.Module):
     def __init__(self):
-        super(YOLOBackbone, self).__init__()
+        super(Backbone, self).__init__()
         self.layers = nn.Sequential(
             ConvBlock(3, 32, kernel_size=3, stride=1, padding=1),
-            nn.MaxPool2d(2, 2),
+            nn.MaxPool2d(2, 2), # 224 -> 112
             ConvBlock(32, 64, kernel_size=3, stride=1, padding=1),
-            nn.MaxPool2d(2, 2),
+            nn.MaxPool2d(2, 2), # 112 -> 56
             ConvBlock(64, 128, kernel_size=3, stride=1, padding=1),
-            nn.MaxPool2d(2, 2)
+            nn.MaxPool2d(2, 2), # 56 -> 28
+            # --- New Layers ---
+            ConvBlock(128, 256, kernel_size=3, stride=1, padding=1),
+            nn.MaxPool2d(2, 2), # 28 -> 14
+            ConvBlock(256, 512, kernel_size=3, stride=1, padding=1),
+            nn.MaxPool2d(2, 2)  # 14 -> 7
         )
 
     def forward(self, x):
         return self.layers(x)
 
 class Classifier(nn.Module):
-    def __init__(self, num_classes): # Default to 4 states
+    def __init__(self, num_classes):
         super(Classifier, self).__init__()
-        
-        # 1. Use the existing backbone to extract features
-        self.backbone = YOLOBackbone()
-        
-        # 2. THE SQUASHER (Global Average Pooling)
-        # Turns the 80x80 grid of features into a 1x1 summary.
-        # This destroys spatial info (Where) but keeps content info (What).
+        self.backbone = Backbone()
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        
-        # 3. THE MENU PICKER (Fully Connected Layer)
-        # Takes the 128 summary features and outputs 4 scores.
-        self.fc = nn.Linear(128, num_classes)
+        # Changed from 128 to 512 to match the new Backbone output
+        self.fc = nn.Linear(512, num_classes) 
 
     def forward(self, x):
-        # 1. Extract Features
-        # Input: (Batch, 3, 640, 640) -> Output: (Batch, 128, 80, 80)
         x = self.backbone(x)
-        
-        # 2. Squash to Summary
-        # Output: (Batch, 128, 1, 1)
         x = self.avgpool(x)
-        
-        # 3. Flatten
-        # Output: (Batch, 128) - A simple list of 128 numbers per image
         x = torch.flatten(x, 1)
-        
-        # 4. Classify
-        # Output: (Batch, 4) - Raw scores for [Occupied, Unattended, Unoccupied, None]
         return self.fc(x)
-        
-        # Note: We REMOVED torch.sigmoid.
-        # In classification, the training loss function (CrossEntropy) 
-        # prefers raw numbers (logits), not 0-1 probabilities.

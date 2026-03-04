@@ -11,7 +11,12 @@ import numpy as np
 from datetime import datetime
 from collections import defaultdict
 import uuid
-
+import torch
+import numpy as np
+from torchvision.transforms import ToTensor, Resize, Compose
+from model import Classifier  
+from pathlib import Path
+from torchvision import transforms
 # Import capture module
 from capture import capture_frame_from_stream, save_screenshot, process_stream
 
@@ -20,11 +25,9 @@ OD_MODEL_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../o
 sys.path.insert(0, OD_MODEL_PATH)
 
 app = Flask(__name__)
+# Only allow your specific React dev server to talk to the backend
 CORS(app, resources={r"/*": {"origins": "*"}})
-
 app.config["MONGO_URI"] = "mongodb://localhost:27017/myDatabase"
-
-# Try to initialize MongoDB, but don't fail if it's not available
 try:
     mongo = PyMongo(app)
     MONGO_AVAILABLE = True
@@ -35,10 +38,10 @@ except Exception as e:
 
 # Configuration
 SCREENSHOT_INTERVAL = 30  # seconds between screenshots
-NUM_CLASSES = 3  # model still has 3 output neurons
+NUM_CLASSES = 2  # model has 2 output neurons
 IMG_SIZE = 224
-# 3-class status: model output maps directly to these
-CLASS_NAMES = ["Unoccupied", "Unattended", "Occupied"]
+# 2-class status: model output maps directly to these
+CLASS_NAMES = ["Unoccupied", "Occupied"]
 
 # Model paths - will check in order
 BACKEND_DIR = os.path.dirname(__file__)
@@ -86,21 +89,22 @@ def load_model():
         
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"🔧 PyTorch available, using device: {device}")
-        
         # Search for model weights
         for model_path in MODEL_PATHS:
             if os.path.exists(model_path):
                 try:
-                    temp_model = Classifier(num_classes=NUM_CLASSES).to(device)
-                    temp_model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
-                    temp_model.eval()
+                    temp_model = Classifier(num_classes=2).to(device)
+                    temp_model.load_state_dict(torch.load(model_path, map_location=device))
                     model = temp_model
                     model_loaded_path = model_path
+                    model.eval()
+                    
                     print(f"Model loaded from: {model_path}")
                     return True
                 except Exception as e:
                     print(f"Failed to load weights from {model_path}: {e}")
                     continue
+        
         
         print(f"No model weights found")
         print(f"Place model file (.pth) in: {MODELS_DIR}")
@@ -134,22 +138,27 @@ def predict_occupancy(image):
     
     try:
         import torch
+        from torchvision import transforms
         from torchvision.transforms import ToTensor, Resize, Compose
         
         preprocess = Compose([
             ToTensor(),
-            Resize((IMG_SIZE, IMG_SIZE))
-        ])
+            Resize((IMG_SIZE, IMG_SIZE)),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            ])
         
         img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    
         img_tensor = preprocess(img_rgb).unsqueeze(0).to(device)
         
         with torch.no_grad():
             outputs = model(img_tensor)
+            
             probs = torch.nn.functional.softmax(outputs, dim=1)
+            
             confidence, predicted_idx = torch.max(probs, 1)
         
-        raw_class_idx = predicted_idx.item()
+        class_idx = predicted_idx.item()
         conf = confidence.item()
         
         # Log ALL class probabilities for debugging
@@ -160,19 +169,11 @@ def predict_occupancy(image):
         )
         print(f"  📊 Model probabilities: {prob_str}")
         
-        # Save the crop for visual debugging
-        debug_dir = os.path.join(BACKEND_DIR, 'debug_crops')
-        os.makedirs(debug_dir, exist_ok=True)
-        debug_path = os.path.join(debug_dir, f"crop_{datetime.now().strftime('%H%M%S')}.jpg")
-        cv2.imwrite(debug_path, image)
-        
-        class_idx = raw_class_idx
-        
         return {
             "class_index": class_idx,
             "class_name": CLASS_NAMES[class_idx],
             "confidence": round(conf, 4),
-            "is_occupied": class_idx == 2,  # only truly occupied
+            "is_occupied": class_idx == 1,
             "is_mock": False,
             "all_probabilities": {
                 CLASS_NAMES[i]: round(float(all_probs[i]), 4)
@@ -365,81 +366,31 @@ def submit_floorplan():
     }), 201
 
 
-@app.route("/streams/<stream_id>/seat-mappings", methods=["POST"])
+@app.route('/streams/<stream_id>/seat-mappings', methods=['POST'])
 def save_seat_mappings(stream_id):
-    """Save camera coordinate mappings for seats."""
-    import json
-    print("stream_id", stream_id)
-    if stream_id not in active_streams:
-        return jsonify({"error": "Stream not found"}), 404
-    
-    data = request.get_json()
-    mappings = data.get("mappings", {})
-    
-    if not mappings:
-        return jsonify({"error": "No mappings provided"}), 400
-    
-    # Update active_streams with camera coordinates
-    stream_info = active_streams[stream_id]
-    updated_seats = []
-    
-    for seat in stream_info.get("coordinates", []):
-        seat_id = seat.get("id")
-        if seat_id and seat_id in mappings and mappings[seat_id]:
-            # Add camera coordinates to existing seat
-            camera_coords = mappings[seat_id]
-            updated_seat = {
-                **seat,
-                "camera_x": camera_coords.get("x", 0),
-                "camera_y": camera_coords.get("y", 0),
-                "camera_width": camera_coords.get("width", 0),
-                "camera_height": camera_coords.get("height", 0)
-            }
-            updated_seats.append(updated_seat)
-        else:
-            updated_seats.append(seat)
-    
-    # Update in-memory stream info
-    active_streams[stream_id]["coordinates"] = updated_seats
-    
-    # Store in MongoDB if available (only update floorplans and streams, not a separate seat_mappings collection)
-    if MONGO_AVAILABLE and mongo:
-        print("mongo is available")
-        try:
-            # Update the floorplans collection with camera coordinates
-            floorplan_id = stream_info.get("floorplan_id")
-            if floorplan_id:
-                mongo.db.floorplans.update_one(
-                    {"_id": floorplan_id},
-                    {"$set": {"seats": updated_seats}}
+    try:
+        data = request.json
+        mappings = data.get('mappings', [])
+        
+        # 1. Update local memory so the app keeps working
+        if stream_id in active_streams:
+            active_streams[stream_id]['seat_mappings'] = mappings
+            
+        # 2. Attempt MongoDB save only if available
+        if mongo:
+            try:
+                mongo.db.streams.update_one(
+                    {'stream_id': stream_id},
+                    {'$set': {'seat_mappings': mappings}},
+                    upsert=True
                 )
-            
-            # Update streams collection
-            mongo.db.streams.update_one(
-                {"_id": stream_id},
-                {"$set": {"coordinates": updated_seats}}
-            )
-            
-            print(f"Seat mappings saved for stream {stream_id}: {len(mappings)} mappings")
-            print(f"Updated seats with camera coordinates:")
-            for seat in updated_seats:
-                if seat.get("camera_x"):
-                    print(f"  - {seat.get('label')}: camera({seat.get('camera_x')},{seat.get('camera_y')},{seat.get('camera_width')},{seat.get('camera_height')})")
-            
-        except Exception as e:
-            print(f"Failed to store seat mappings in MongoDB: {e}")
-            return jsonify({"error": str(e)}), 500
-    
-    print(f"In-memory stream {stream_id} coordinates updated: {len(updated_seats)} seats")
-    
-    return jsonify({
-        "message": "Seat mappings saved successfully",
-        "stream_id": stream_id,
-        "mappings_count": len(mappings),
-        "updated_seats": updated_seats,
-        "stored_in_db": MONGO_AVAILABLE
-    })
+            except Exception as e:
+                print(f"MongoDB save failed, but memory updated: {e}")
 
+        return jsonify({"status": "success", "message": "Mappings saved locally"})
+    except Exception as e:
+        print(f"Critical Error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route("/floorplans", methods=["GET"])
 def get_floorplans():
