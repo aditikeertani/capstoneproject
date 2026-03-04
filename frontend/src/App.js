@@ -1,72 +1,62 @@
-import React, { useState } from "react";
-import { ping } from "./api";
-import FloorplanUpload from "./components/FloorplanUpload";
-import StreamAssignment from "./components/StreamAssignment";
+import React, { useState, useEffect } from "react";
+import { getFloorplans } from "./api"; 
 import FloorplanDesigner from "./components/FloorplanDesigner";
 import FeedSelection from "./components/FeedSelection";
-
+import './App.css'; // Or whatever your CSS file is named
 export default function App() {
-  const [pingResult, setPingResult] = useState("");
-  const [activeTab, setActiveTab] = useState("dashboard");
+  const [currentStep, setCurrentStep] = useState(1);
 
-  const tabStyle = (tab) => ({
-    padding: "10px 16px",
-    border: "none",
-    backgroundColor: activeTab === tab ? "#007bff" : "#f0f0f0",
-    color: activeTab === tab ? "white" : "black",
-    cursor: "pointer",
-    fontSize: "14px",
-    fontWeight: activeTab === tab ? "bold" : "normal",
-  });
+  useEffect(() => {
+    const checkSavedData = async () => {
+      try {
+        const response = await getFloorplans();
+        if (response.floorplans && response.floorplans.length > 0) {
+          setCurrentStep(3); // If data exists, skip to Feed Selection
+        }
+      } catch (error) {
+        console.error("Backend unreachable", error);
+      }
+    };
+    checkSavedData();
+  }, []);
 
-  const onPing = async () => {
-    setPingResult("Pinging...");
-    try {
-      const data = await ping();
-      setPingResult("✅ " + JSON.stringify(data));
-    } catch (e) {
-      setPingResult("❌ Failed to reach backend. Is Flask running?");
-    }
-  };
+  const nextStep = () => setCurrentStep((prev) => prev + 1);
+  const prevStep = () => setCurrentStep((prev) => prev - 1);
 
 
- return (
-  <div style={{ padding: 20, fontFamily: "Arial" }}>
-    <h1 style={{ marginTop: 0 }}>Occupancy Detection Dashboard</h1>
-
-      {/* Tab Navigation */}
-      <div style={{ borderBottom: "1px solid #ddd", marginBottom: 20 }}>
-        <button style={tabStyle("dashboard")} onClick={() => setActiveTab("dashboard")}>
-          Dashboard
-        </button>
-        <button style={tabStyle("designer")} onClick={() => setActiveTab("designer")}>
-          Floorplan Designer
-        </button>
-        <button style={tabStyle("feeds")} onClick={() => setActiveTab("feeds")}>
-          Feed Selection
-        </button>
-      </div>
-
-      {activeTab === "dashboard" && (
-        <>
-          <div style={{ marginBottom: 16 }}>
-            <button onClick={onPing} style={{ padding: "8px 12px" }}>
-              Ping Backend
-            </button>
-            <span style={{ marginLeft: 10 }}>{pingResult}</span>
-          </div>
-
-          <div style={{ display: "grid", gap: 16 }}>
-            <FloorplanUpload />
-            <StreamAssignment />
-          </div>
-        </>
+  return (
+    <div style={{ padding: 20, fontFamily: "Arial" }}>
+      <h1>Occupancy Detection Setup</h1>
+      
+      {/* Combined Step 1: Design & Stream Upload */}
+      {currentStep === 1 && (
+        <div>
+          <h2>Step 1: Design Floorplan & Assign Stream</h2>
+          <FloorplanDesigner onComplete={nextStep} />
+        </div>
       )}
 
-      {activeTab === "feeds" && <FeedSelection />}
+      {/* Step 2: Feed Selection */}
+      {currentStep === 2 && (
+        <div>
+          <h2>Step 2: Feed Selection</h2>
+          <FeedSelection />
+          <div style={{ marginTop: 20 }}>
+            <button onClick={prevStep} className ="btn backbutton">Back</button>
+            <button onClick={nextStep} style={{ marginLeft: 10 }}>Next: View Heatmap</button>
+          </div>
+        </div>
+      )}
 
-      {activeTab === "designer" && <FloorplanDesigner />}
+      {/* Step 3: Heatmap Display */}
+      {currentStep === 3 && (
+        <div>
+          <button onClick={prevStep} className="btn backbutton">Back</button>        
+          <h2>Step 3: Live Heatmap</h2>
+          <button onClick={() => setCurrentStep(1)}>Restart</button>
+          {/* Heatmap Overlay component goes here */}
+        </div>
+      )}
     </div>
   );
 }
-

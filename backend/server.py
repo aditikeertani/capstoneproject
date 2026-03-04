@@ -20,11 +20,10 @@ OD_MODEL_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../o
 sys.path.insert(0, OD_MODEL_PATH)
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
-
+# Only allow your specific React dev server to talk to the backend
+CORS(app, resources={r"/*": {"origins": "http://localhost:3000"}})
 app.config["MONGO_URI"] = "mongodb://localhost:27017/myDatabase"
 
-# Try to initialize MongoDB, but don't fail if it's not available
 try:
     mongo = PyMongo(app)
     MONGO_AVAILABLE = True
@@ -344,81 +343,31 @@ def submit_floorplan():
     }), 201
 
 
-@app.route("/streams/<stream_id>/seat-mappings", methods=["POST"])
+@app.route('/streams/<stream_id>/seat-mappings', methods=['POST'])
 def save_seat_mappings(stream_id):
-    """Save camera coordinate mappings for seats."""
-    import json
-    print("stream_id", stream_id)
-    if stream_id not in active_streams:
-        return jsonify({"error": "Stream not found"}), 404
-    
-    data = request.get_json()
-    mappings = data.get("mappings", {})
-    
-    if not mappings:
-        return jsonify({"error": "No mappings provided"}), 400
-    
-    # Update active_streams with camera coordinates
-    stream_info = active_streams[stream_id]
-    updated_seats = []
-    
-    for seat in stream_info.get("coordinates", []):
-        seat_id = seat.get("id")
-        if seat_id and seat_id in mappings and mappings[seat_id]:
-            # Add camera coordinates to existing seat
-            camera_coords = mappings[seat_id]
-            updated_seat = {
-                **seat,
-                "camera_x": camera_coords.get("x", 0),
-                "camera_y": camera_coords.get("y", 0),
-                "camera_width": camera_coords.get("width", 0),
-                "camera_height": camera_coords.get("height", 0)
-            }
-            updated_seats.append(updated_seat)
-        else:
-            updated_seats.append(seat)
-    
-    # Update in-memory stream info
-    active_streams[stream_id]["coordinates"] = updated_seats
-    
-    # Store in MongoDB if available (only update floorplans and streams, not a separate seat_mappings collection)
-    if MONGO_AVAILABLE and mongo:
-        print("mongo is available")
-        try:
-            # Update the floorplans collection with camera coordinates
-            floorplan_id = stream_info.get("floorplan_id")
-            if floorplan_id:
-                mongo.db.floorplans.update_one(
-                    {"_id": floorplan_id},
-                    {"$set": {"seats": updated_seats}}
+    try:
+        data = request.json
+        mappings = data.get('mappings', [])
+        
+        # 1. Update local memory so the app keeps working
+        if stream_id in active_streams:
+            active_streams[stream_id]['seat_mappings'] = mappings
+            
+        # 2. Attempt MongoDB save only if available
+        if mongo:
+            try:
+                mongo.db.streams.update_one(
+                    {'stream_id': stream_id},
+                    {'$set': {'seat_mappings': mappings}},
+                    upsert=True
                 )
-            
-            # Update streams collection
-            mongo.db.streams.update_one(
-                {"_id": stream_id},
-                {"$set": {"coordinates": updated_seats}}
-            )
-            
-            print(f"Seat mappings saved for stream {stream_id}: {len(mappings)} mappings")
-            print(f"Updated seats with camera coordinates:")
-            for seat in updated_seats:
-                if seat.get("camera_x"):
-                    print(f"  - {seat.get('label')}: camera({seat.get('camera_x')},{seat.get('camera_y')},{seat.get('camera_width')},{seat.get('camera_height')})")
-            
-        except Exception as e:
-            print(f"Failed to store seat mappings in MongoDB: {e}")
-            return jsonify({"error": str(e)}), 500
-    
-    print(f"In-memory stream {stream_id} coordinates updated: {len(updated_seats)} seats")
-    
-    return jsonify({
-        "message": "Seat mappings saved successfully",
-        "stream_id": stream_id,
-        "mappings_count": len(mappings),
-        "updated_seats": updated_seats,
-        "stored_in_db": MONGO_AVAILABLE
-    })
+            except Exception as e:
+                print(f"MongoDB save failed, but memory updated: {e}")
 
+        return jsonify({"status": "success", "message": "Mappings saved locally"})
+    except Exception as e:
+        print(f"Critical Error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route("/floorplans", methods=["GET"])
 def get_floorplans():

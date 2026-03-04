@@ -6,6 +6,8 @@
  *
  * :: 2016-09-05 01:16
  */
+/* global define */
+/* eslint-disable no-undef */
 ;(function (name, context, factory) {
 
   // Supports UMD. AMD, CommonJS/Node.js and browser context

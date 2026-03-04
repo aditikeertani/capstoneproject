@@ -36,3 +36,29 @@
     transform: rotate(360deg);
   }
 }
+
+.backbutton {
+  padding: 15px 90px;
+  font-size: 20px;
+  background-color: rgba(161, 182, 180, 0.781); /* Subtle gray */
+  color: white;
+  border: 20px;
+  border-radius: 10px;
+  cursor: pointer;
+  margin-right: 10px;
+  font-weight: 500;
+  transition: background-color 0.2s ease;
+}
+
+.backbutton:hover {
+  background-color: #13702a; /* Darker gray on hover */
+}
+
+.backbutton:active {
+  transform: translateY(1px); /* Slight "press" effect */
+}
+.sav{
+  width: 100%;       /* Spans the whole container */
+  padding: 15px 0;   /* Makes it taller */
+  font-weight: bold;
+}

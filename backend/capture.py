@@ -15,6 +15,9 @@ from datetime import datetime
 
 def capture_frame_from_stream(stream_url):
     frame_img = None
+    if not isinstance(stream_url, str) or not (stream_url.startswith('rtsp') or stream_url.startswith('http') or stream_url.startswith('V')):
+        print(f"DEBUG: Skipping invalid stream_url: {stream_url[:50]}...")
+        return None
     video = av.open(stream_url, 'r')
     for packet in video.demux():
         print(f"Demuxing packet {packet}")
