@@ -27,7 +27,7 @@ function seatsToHeatmapPoints(snapshot, displayW, displayH, useFloorplan) {
     : (snapshot.frame_height || displayH);
 
   return snapshot.seats
-    .filter(s => Number(s.status) === 2)
+    .filter(s => Number(s.status) === 1)
     .map(s => {
       let nx, ny;
 
@@ -179,7 +179,7 @@ export default function HeatmapOverlay({
       >
         {snapshot?.seats?.map(seat => {
           const status = Number(seat.status);
-          const occupied = status === 2;
+          const occupied = status === 1;
 
           let cx, cy;
           if (useFloorplan) {

@@ -79,7 +79,7 @@ def process_stream(stream_id, stream_url, active_streams, occupancy_data,
                     print(f"  🔍 Seat {coord.get('label', seat_id)}: camera_x={camera_x}, camera_y={camera_y}, camera_w={camera_width}, camera_h={camera_height}")
                     
                     # If camera coordinates exist, crop that region for prediction
-                    if all(v is not None and v > 0 for v in [camera_x, camera_y, camera_width, camera_height]):
+                    if all(v is not None for v in [camera_x, camera_y, camera_width, camera_height]) and camera_width > 0 and camera_height > 0:
                         # Ensure coordinates are within frame bounds
                         x1 = max(0, int(camera_x))
                         y1 = max(0, int(camera_y))

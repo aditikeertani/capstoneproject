@@ -370,24 +370,48 @@ def submit_floorplan():
 def save_seat_mappings(stream_id):
     try:
         data = request.json
-        mappings = data.get('mappings', [])
+        mappings = data.get('mappings', {})
         
         # 1. Update local memory so the app keeps working
         if stream_id in active_streams:
             active_streams[stream_id]['seat_mappings'] = mappings
             
+            if 'coordinates' in active_streams[stream_id]:
+                for coord in active_streams[stream_id]['coordinates']:
+                    seat_id = coord.get('id')
+                    if seat_id in mappings and mappings[seat_id]:
+                        mapping = mappings[seat_id]
+                        coord['camera_x'] = mapping.get('x')
+                        coord['camera_y'] = mapping.get('y')
+                        coord['camera_width'] = mapping.get('width')
+                        coord['camera_height'] = mapping.get('height')
+                    else:
+                        coord['camera_x'] = None
+                        coord['camera_y'] = None
+                        coord['camera_width'] = None
+                        coord['camera_height'] = None
+            
         # 2. Attempt MongoDB save only if available
         if mongo:
             try:
                 mongo.db.streams.update_one(
-                    {'stream_id': stream_id},
-                    {'$set': {'seat_mappings': mappings}},
+                    {'_id': stream_id},
+                    {'$set': {
+                        'seat_mappings': mappings,
+                        'coordinates': active_streams[stream_id].get('coordinates', []) if stream_id in active_streams else []
+                    }},
                     upsert=True
                 )
             except Exception as e:
                 print(f"MongoDB save failed, but memory updated: {e}")
 
-        return jsonify({"status": "success", "message": "Mappings saved locally"})
+        updated_seats = active_streams[stream_id].get('coordinates', []) if stream_id in active_streams else []
+        return jsonify({
+            "status": "success", 
+            "message": "Mappings saved locally",
+            "mappings_count": len([k for k, v in mappings.items() if v]),
+            "updated_seats": updated_seats
+        })
     except Exception as e:
         print(f"Critical Error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
