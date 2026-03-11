@@ -1,21 +1,10 @@
 import React, { useEffect, useMemo, useRef } from "react";
 import h337 from './heatmap.js';
 
-/**
- * Clamp a value between min and max.
- */
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
 
-/**
- * Convert the backend seat array into heatmap data-points.
- *
- * When rendering on the floorplan, seats are positioned using their
- * floorplan-relative coordinates (x, y within image_width × image_height).
- *
- * When rendering on the camera frame, we use camera coordinates if available.
- */
 function seatsToHeatmapPoints(snapshot, displayW, displayH, useFloorplan) {
   if (!snapshot?.seats?.length) return [];
 
@@ -27,24 +16,21 @@ function seatsToHeatmapPoints(snapshot, displayW, displayH, useFloorplan) {
     : (snapshot.frame_height || displayH);
 
   return snapshot.seats
-    .filter(s => Number(s.status) === 2)
+    .filter(s => Number(s.status) === 1 && !s.id.startsWith('entrance')) // 👉 Filter out entrances from Heatmap calculation
     .map(s => {
       let nx, ny;
 
       if (useFloorplan) {
-        // Use the centre of the floorplan bounding box
         const cx = Number(s.x) + (Number(s.width) || 0) / 2;
         const cy = Number(s.y) + (Number(s.height) || 0) / 2;
         nx = clamp(cx / refW, 0, 1);
         ny = clamp(cy / refH, 0, 1);
       } else {
-        // Camera frame: prefer camera coordinates if available
         const hasCameraCoords = s.camera_x != null && s.camera_width > 0;
         if (hasCameraCoords) {
           nx = clamp((Number(s.camera_x) + Number(s.camera_width) / 2) / refW, 0, 1);
           ny = clamp((Number(s.camera_y) + Number(s.camera_height) / 2) / refH, 0, 1);
         } else {
-          // Fallback: centre of the floorplan bounding box
           const cx = Number(s.x) + (Number(s.width) || 0) / 2;
           const cy = Number(s.y) + (Number(s.height) || 0) / 2;
           nx = clamp(cx / refW, 0, 1);
@@ -61,18 +47,15 @@ function seatsToHeatmapPoints(snapshot, displayW, displayH, useFloorplan) {
 }
 
 export default function HeatmapOverlay({
-  snapshot,                 // backend JSON from /streams/<id>/latest
-  width: maxWidth = 960,    // maximum display width
-  height: maxHeight = 720,  // maximum display height
-  imageSrc = null,          // data-URI or URL; null → dark placeholder
+  snapshot,                
+  width: maxWidth = 960,   
+  height: maxHeight = 720,  
+  imageSrc = null,         
 }) {
   const containerRef = useRef(null);
   const heatmapRef = useRef(null);
-
-  // Determine whether we're rendering on the floorplan or the camera frame
   const useFloorplan = !!snapshot?.floorplan;
 
-  // Use floorplan dimensions when available, otherwise fall back to camera frame
   const sourceW = useFloorplan
     ? (snapshot?.floorplan_width || 1920)
     : (snapshot?.frame_width || 1920);
@@ -89,11 +72,8 @@ export default function HeatmapOverlay({
     [snapshot, displayW, displayH, useFloorplan]
   );
 
-  // Create the heatmap instance (re-create when display size changes)
   useEffect(() => {
     if (!containerRef.current) return;
-
-    // Clear any existing heatmap canvas
     const existing = containerRef.current.querySelector('.heatmap-canvas');
     if (existing) existing.remove();
 
@@ -106,15 +86,11 @@ export default function HeatmapOverlay({
       height: displayH,
     });
 
-    return () => {
-      heatmapRef.current = null;
-    };
+    return () => { heatmapRef.current = null; };
   }, [displayW, displayH, scale]);
 
-  // Update heatmap data when points change
   useEffect(() => {
     if (!heatmapRef.current) return;
-
     heatmapRef.current.setData({
       max: 1,
       data: points,
@@ -123,102 +99,85 @@ export default function HeatmapOverlay({
 
   return (
     <div style={{ position: "relative", width: displayW, height: displayH }}>
-      {/* Background image (live frame) or a dark placeholder */}
       {imageSrc ? (
         <img
           src={imageSrc}
           alt={useFloorplan ? "Floorplan" : "Camera frame"}
-          style={{
-            width: displayW,
-            height: displayH,
-            display: "block",
-            objectFit: "fill",
-          }}
+          style={{ width: displayW, height: displayH, display: "block", objectFit: "fill" }}
         />
       ) : (
-        <div
-          style={{
-            width: displayW,
-            height: displayH,
-            backgroundColor: "#1a1a2e",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "#555",
-            fontSize: 14,
-          }}
-        >
+        <div style={{ width: displayW, height: displayH, backgroundColor: "#1a1a2e", display: "flex", alignItems: "center", justifyContent: "center", color: "#555", fontSize: 14 }}>
           {snapshot ? "No frame available" : "Waiting for data…"}
         </div>
       )}
 
-      {/* Heatmap canvas layer */}
-      <div
-        ref={containerRef}
-        style={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          width: displayW,
-          height: displayH,
-        }}
-      />
+      <div ref={containerRef} style={{ position: "absolute", top: 0, left: 0, width: displayW, height: displayH }} />
 
-      {/* SVG overlay for seat markers / labels */}
       <svg
         width={displayW}
         height={displayH}
         viewBox={`0 0 ${sourceW} ${sourceH}`}
         preserveAspectRatio="none"
-        style={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          pointerEvents: "auto",
-        }}
+        style={{ position: "absolute", top: 0, left: 0, pointerEvents: "auto" }}
       >
-        {snapshot?.seats?.map(seat => {
-          const status = Number(seat.status);
-          const occupied = status === 2;
+        {snapshot?.seats?.map(item => {
+          
+          // 👉 NEW: Intercept Entrance shapes and draw them statically!
+          if (item.id.startsWith("entrance")) {
+            const isHorizontal = item.width >= item.height;
+            const barW = 12; 
+            const lineT = 6;
+            
+            return (
+              <g key={item.id} opacity={0.85}>
+                {isHorizontal ? (
+                  <>
+                    <rect x={item.x} y={item.y} width={barW} height={item.height} fill="#333" />
+                    <rect x={item.x + item.width - barW} y={item.y} width={barW} height={item.height} fill="#333" />
+                    <rect x={item.x} y={item.y + (item.height/2) - (lineT/2)} width={item.width} height={lineT} fill="#333" />
+                  </>
+                ) : (
+                  <>
+                    <rect x={item.x} y={item.y} width={item.width} height={barW} fill="#333" />
+                    <rect x={item.x} y={item.y + item.height - barW} width={item.width} height={barW} fill="#333" />
+                    <rect x={item.x + (item.width/2) - (lineT/2)} y={item.y} width={lineT} height={item.height} fill="#333" />
+                  </>
+                )}
+                {/* Optional Label */}
+                <text x={item.x} y={item.y - 10} fontSize="20" fontWeight="bold" fill="#333">{item.label}</text>
+              </g>
+            );
+          }
+
+          // Existing Seat Circle Logic
+          const status = Number(item.status);
+          const occupied = status === 1;
 
           let cx, cy;
           if (useFloorplan) {
-            // Centre of the floorplan bounding box
-            cx = Number(seat.x) + (Number(seat.width) || 0) / 2;
-            cy = Number(seat.y) + (Number(seat.height) || 0) / 2;
+            cx = Number(item.x) + (Number(item.width) || 0) / 2;
+            cy = Number(item.y) + (Number(item.height) || 0) / 2;
           } else {
-            // On the camera frame, prefer camera coords if available
-            const hasCameraCoords = seat.camera_x != null && seat.camera_width > 0;
+            const hasCameraCoords = item.camera_x != null && item.camera_width > 0;
             if (hasCameraCoords) {
-              cx = Number(seat.camera_x) + Number(seat.camera_width) / 2;
-              cy = Number(seat.camera_y) + Number(seat.camera_height) / 2;
+              cx = Number(item.camera_x) + Number(item.camera_width) / 2;
+              cy = Number(item.camera_y) + Number(item.camera_height) / 2;
             } else {
-              // Fallback: centre of the floorplan bounding box
-              cx = Number(seat.x) + (Number(seat.width) || 0) / 2;
-              cy = Number(seat.y) + (Number(seat.height) || 0) / 2;
+              cx = Number(item.x) + (Number(item.width) || 0) / 2;
+              cy = Number(item.y) + (Number(item.height) || 0) / 2;
             }
           }
 
           return (
-            <g key={seat.id} opacity={1}>
-              {/* Seat marker */}
+            <g key={item.id} opacity={1}>
               <circle
                 cx={cx}
                 cy={cy}
                 r={20}
-                fill={
-                  occupied
-                    ? "rgba(255,60,60,0.45)"       // occupied → red
-                    : "rgba(60,255,60,0.25)"       // unoccupied → green
-                }
-                stroke={
-                  occupied 
-                    ? "rgba(255,60,60,0.9)" 
-                    : "rgba(60,255,60,0.7)"
-                }
+                fill={occupied ? "rgba(255,60,60,0.45)" : "rgba(60,255,60,0.25)"}
+                stroke={occupied ? "rgba(255,60,60,0.9)" : "rgba(60,255,60,0.7)"}
                 strokeWidth="3"
               />
-              {/* Label */}
               <text
                 x={cx + 26}
                 y={cy + 6}
@@ -228,7 +187,7 @@ export default function HeatmapOverlay({
                 stroke="rgba(0,0,0,0.5)"
                 strokeWidth="0.5"
               >
-                {seat.label}
+                {item.label}
               </text>
             </g>
           );

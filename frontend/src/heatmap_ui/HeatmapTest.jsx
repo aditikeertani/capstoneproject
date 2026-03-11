@@ -19,6 +19,7 @@ export default function HeatmapTest() {
       try {
         const data = await getStreams();
         const list = data.streams || [];
+        
         setStreams(list);
         if (list.length > 0 && !selectedStreamId) {
           setSelectedStreamId(list[0].id);
@@ -30,7 +31,7 @@ export default function HeatmapTest() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
+  
   // Fetch the latest snapshot for the selected stream
   const fetchSnapshot = useCallback(async () => {
     if (!selectedStreamId) return;
@@ -38,7 +39,10 @@ export default function HeatmapTest() {
     setError("");
     try {
       const data = await getdata(selectedStreamId);
-      console.log("snapshot from backend:", data);
+      
+      // 👉 HERE IS THE CORRECT LOG:
+      console.log("🔥 LIVE MODEL RESULT:", data.seats); 
+      
       setSnapshot(data);
       setLastUpdated(new Date().toLocaleTimeString());
     } catch (e) {
@@ -47,13 +51,6 @@ export default function HeatmapTest() {
     }
     setLoading(false);
   }, [selectedStreamId]);
-
-  // Initial fetch when stream changes
-  useEffect(() => {
-    if (selectedStreamId) {
-      fetchSnapshot();
-    }
-  }, [selectedStreamId, fetchSnapshot]);
 
   // Polling
   useEffect(() => {

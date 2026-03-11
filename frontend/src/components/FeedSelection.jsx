@@ -19,7 +19,7 @@ export default function FeedSelection() {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
   const imageRef = useRef(null);
-
+  console.log("DATA BEING SENT:", seatMappings);
   // Load available streams on mount
   useEffect(() => {
     loadStreams();
@@ -38,6 +38,7 @@ export default function FeedSelection() {
   };
 
   // Load frame when stream is selected
+  // Load frame when stream is selected
   const loadFrame = async () => {
     if (!selectedStreamId) return;
     
@@ -47,10 +48,15 @@ export default function FeedSelection() {
     try {
       const data = await getStreamFrame(selectedStreamId);
       setFrameData(data);
-      setSeats(data.seats || []);
+      
+      // 👉 NEW: Filter out cosmetic shapes so we don't try to camera map them!
+      const mappableSeats = (data.seats || []).filter(s => !s.id.startsWith('entrance'));
+      
+      setSeats(mappableSeats);
+      
       // Initialize mappings for seats that don't have one yet
       const newMappings = { ...seatMappings };
-      (data.seats || []).forEach(seat => {
+      mappableSeats.forEach(seat => {
         if (!newMappings[seat.id]) {
           newMappings[seat.id] = null;
         }
