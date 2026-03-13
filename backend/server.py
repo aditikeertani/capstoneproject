@@ -19,7 +19,8 @@ from pathlib import Path
 from torchvision import transforms
 # Import capture module
 from capture import capture_frame_from_stream, save_screenshot, process_stream
-
+import av
+av.logging.set_level(av.logging.ERROR)
 # Add od-model to path for importing the model
 OD_MODEL_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../od-model'))
 sys.path.insert(0, OD_MODEL_PATH)
@@ -49,10 +50,8 @@ MODELS_DIR = os.path.join(BACKEND_DIR, 'models')
 os.makedirs(MODELS_DIR, exist_ok=True)
 
 MODEL_PATHS = [
-    os.path.join(MODELS_DIR, 'occupancy_model.pth'),
-    os.path.join(MODELS_DIR, 'model1.pth'),
-    os.path.join(OD_MODEL_PATH, 'model1.pth'),
-    os.path.join(OD_MODEL_PATH, 'occupancy_model.pth'),
+    os.path.join(MODELS_DIR, 'ModelBest.pth'),
+    os.path.join(OD_MODEL_PATH, 'ModelBest.pth')
 ]
 
 # Directory for saving screenshots
@@ -127,7 +126,6 @@ def predict_occupancy(image):
     global model, device
     
     if model is None:
-        # No model loaded - return error instead of mock
         return {
             "class_index": -1,
             "class_name": "Error",
@@ -148,18 +146,16 @@ def predict_occupancy(image):
             ])
         
         img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    
         img_tensor = preprocess(img_rgb).unsqueeze(0).to(device)
         
         with torch.no_grad():
             outputs = model(img_tensor)
-            
             probs = torch.nn.functional.softmax(outputs, dim=1)
-            
             confidence, predicted_idx = torch.max(probs, 1)
         
         class_idx = predicted_idx.item()
         conf = confidence.item()
+        result_text = CLASS_NAMES[class_idx]
         
         # Log ALL class probabilities for debugging
         all_probs = probs[0].cpu().numpy()
@@ -168,10 +164,48 @@ def predict_occupancy(image):
             for i in range(len(CLASS_NAMES))
         )
         print(f"  📊 Model probabilities: {prob_str}")
+
+        # =======================================================
+        # 🛠️ NEW: DEBUG IMAGE SAVING (Matches your predict.py)
+        # =======================================================
+        try:
+            # 1. Create a debug folder inside backend
+            debug_dir = os.path.join(BACKEND_DIR, 'debug_crops')
+            os.makedirs(debug_dir, exist_ok=True)
+            
+            # 2. Copy the image so we don't mess up the original memory
+            debug_img = image.copy()
+            
+            # 3. Format the label exactly like predict.py
+            if conf < 0.75:
+                label = f"UnSure {result_text}: {conf*100:.1f}"
+                color = (0, 165, 255) # Orange for unsure
+            else:
+                label = f"{result_text}: {conf*100:.1f}%"
+                color = (0, 255, 0) if class_idx == 0 else (0, 0, 255) # Green=Empty, Red=Occupied
+            
+            # 4. Add text to the image. (Font scale auto-adjusts based on crop size)
+            h, w = debug_img.shape[:2]
+            font_scale = max(0.5, w / 400.0) 
+            thickness = max(1, int(font_scale * 2))
+            
+            cv2.putText(debug_img, label, (10, max(30, int(h*0.1))), 
+                        cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, thickness)
+            
+            # 5. Save it!
+            timestamp = datetime.now().strftime("%H%M%S")
+            save_path = os.path.join(debug_dir, f"crop_{timestamp}_{result_text}.jpg")
+            cv2.imwrite(save_path, debug_img)
+            
+            print(f"  📸 Saved debug crop to: {save_path}")
+            
+        except Exception as draw_error:
+            print(f"  ⚠️ Could not save debug image: {draw_error}")
+        # =======================================================
         
         return {
             "class_index": class_idx,
-            "class_name": CLASS_NAMES[class_idx],
+            "class_name": result_text,
             "confidence": round(conf, 4),
             "is_occupied": class_idx == 1,
             "is_mock": False,
@@ -190,7 +224,7 @@ def predict_occupancy(image):
             "is_occupied": False,
             "error": str(e)
         }
-
+    
 # REST API Endpoints
 
 @app.route("/")
@@ -367,27 +401,54 @@ def submit_floorplan():
 
 
 @app.route('/streams/<stream_id>/seat-mappings', methods=['POST'])
+@app.route('/streams/<stream_id>/seat-mappings', methods=['POST'])
 def save_seat_mappings(stream_id):
     try:
         data = request.json
-        mappings = data.get('mappings', [])
         
-        # 1. Update local memory so the app keeps working
+        # 1. Safely extract mappings whether api.js wrapped them or not
+        mappings = data.get('mappings') if 'mappings' in data else data
+        
+        # 2. Update local memory so the app keeps working
         if stream_id in active_streams:
             active_streams[stream_id]['seat_mappings'] = mappings
             
-        # 2. Attempt MongoDB save only if available
+            # 3. THE FIX: Inject the camera coords directly into the seats list
+            # This is exactly where your background worker is looking!
+            for seat in active_streams[stream_id].get('coordinates', []):
+                seat_id = seat.get('id')
+                if seat_id in mappings and mappings[seat_id] is not None:
+                    # Save both naming conventions just to be perfectly safe!
+                    seat['camera_x'] = mappings[seat_id]['x']
+                    seat['camera_y'] = mappings[seat_id]['y']
+                    
+                    seat['camera_w'] = mappings[seat_id]['width']
+                    seat['camera_h'] = mappings[seat_id]['height']
+                    
+                    seat['camera_width'] = mappings[seat_id]['width']
+                    seat['camera_height'] = mappings[seat_id]['height']
+                    
+                    print(f"✅ SUCCESSFULLY LINKED CAMERA BOX TO: {seat['label']}")
+                    
+        # 4. Attempt MongoDB save only if available
         if mongo:
             try:
                 mongo.db.streams.update_one(
-                    {'stream_id': stream_id},
-                    {'$set': {'seat_mappings': mappings}},
+                    {'_id': stream_id}, # Fixed to '_id' to match your stream creation
+                    {'$set': {
+                        'seat_mappings': mappings, 
+                        'coordinates': active_streams[stream_id].get('coordinates', [])
+                    }},
                     upsert=True
                 )
             except Exception as e:
                 print(f"MongoDB save failed, but memory updated: {e}")
 
-        return jsonify({"status": "success", "message": "Mappings saved locally"})
+        return jsonify({
+            "status": "success", 
+            "message": "Mappings saved locally",
+            "updated_seats": active_streams[stream_id].get('coordinates', [])
+        })
     except Exception as e:
         print(f"Critical Error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -547,10 +608,13 @@ def get_stream_frame(stream_id):
         return jsonify({"error": "Stream not found"}), 404
     
     stream_url = active_streams[stream_id]["url"]
-    frame = capture_frame_from_stream(stream_url)
+    try:
+        frame = capture_frame_from_stream(stream_url)
+    except Exception as e:
+        return jsonify({"error": f"Failed to capture frame: {e}"}), 500
     
     if frame is None:
-        return jsonify({"error": "Failed to capture frame"}), 500
+        return jsonify({"error": "Failed to capture frame (no data)"}), 500
     
     # Convert frame to JPEG base64
     _, buffer = cv2.imencode('.jpg', frame)
@@ -626,26 +690,42 @@ def get_stream_latest(stream_id):
     stream_info = active_streams[stream_id]
     seats_dict = occupancy_data.get(stream_id, {})
 
-    # Convert seat dict to array
+    # Normalize occupancy data into a dict by seat id
     if isinstance(seats_dict, dict):
-        seats_list = list(seats_dict.values())
+        occupancy_by_id = seats_dict
     else:
-        seats_list = seats_dict
+        occupancy_by_id = {
+            s.get("id"): s
+            for s in seats_dict
+            if isinstance(s, dict) and s.get("id") is not None
+        }
 
-    # If no occupancy data yet, build from coordinates
-    if not seats_list:
-        seats_list = []
-        for coord in stream_info.get("coordinates", DUMMY_COORDINATES):
-            seats_list.append({
-                "id": coord.get("id"),
-                "x": coord.get("x", 0),
-                "y": coord.get("y", 0),
-                "width": 640,
-                "height": 480,
-                "label": coord.get("label", ""),
-                "status": 0,
-                "confidence": 0,
-            })
+    # Always build the seat list from coordinates so entrances stay visible
+    seats_list = []
+    coords = stream_info.get("coordinates", DUMMY_COORDINATES)
+    for coord in coords:
+        seat_id = coord.get("id")
+        occ = occupancy_by_id.get(seat_id, {})
+
+        def pick(primary, fallback):
+            return primary if primary is not None else fallback
+
+        seats_list.append({
+            "id": seat_id,
+            "x": coord.get("x", 0),
+            "y": coord.get("y", 0),
+            "width": coord.get("width", 0),
+            "height": coord.get("height", 0),
+            "label": coord.get("label", ""),
+            "type": coord.get("type"),
+            "camera_x": pick(coord.get("camera_x"), occ.get("camera_x")),
+            "camera_y": pick(coord.get("camera_y"), occ.get("camera_y")),
+            "camera_width": pick(coord.get("camera_width"), occ.get("camera_width")),
+            "camera_height": pick(coord.get("camera_height"), occ.get("camera_height")),
+            "status": occ.get("status", 0),
+            "status_name": occ.get("status_name", ""),
+            "confidence": occ.get("confidence", 0),
+        })
 
     # Try to capture a live frame for the heatmap background
     frame_base64 = None

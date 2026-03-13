@@ -13,27 +13,56 @@ import cv2
 import av
 from datetime import datetime
 
-def capture_frame_from_stream(stream_url):
-    frame_img = None
-    video = av.open(stream_url, 'r')
-    for packet in video.demux():
-        print(f"Demuxing packet {packet}")
-        for frame in packet.decode():
-            print(f"Decoding frame {frame}")
-            if type(frame) is av.video.frame.VideoFrame:
-                if frame.key_frame:
-                    frame_img = frame.to_ndarray(format='bgr24')
-                    # Close Connection to RTSP Source
-                    break
-        if frame_img is not None:
-            break
+def is_entrance(coord):
+    if not coord:
+        return False
+    t = coord.get("type")
+    if t == "entrance":
+        return True
+    cid = coord.get("id")
+    if isinstance(cid, str) and cid.startswith("entrance"):
+        return True
+    label = coord.get("label")
+    if isinstance(label, str) and label.lower().startswith("entrance"):
+        return True
+    return False
 
-    if not video or frame_img is None:
+def capture_frame_from_stream(stream_url):
+    if stream_url is None:
         return None
+    clean_url = str(stream_url).strip().strip('"').strip("'").rstrip("\\")
+    frame_img = None
+    try:
+        video = av.open(
+            clean_url,
+            "r",
+            options={
+                "rtsp_transport": "tcp",
+                "stimeout": "5000000",
+            },
+        )
+    except Exception as e:
+        print(f"RTSP open failed for {clean_url}: {e}")
+        return None
+
+    try:
+        for packet in video.demux():
+            for frame in packet.decode():
+                if type(frame) is av.video.frame.VideoFrame and frame.key_frame:
+                    frame_img = frame.to_ndarray(format="bgr24")
+                    break
+            if frame_img is not None:
+                break
+    except Exception as e:
+        print(f"Error capturing frame from {clean_url}: {e}")
+        return None
+    finally:
+        try:
+            video.close()
+        except Exception:
+            pass
+
     return frame_img
-    #except Exception as e:
-    #    print(f"Error capturing frame: {e}")
-    #    return None
 
 
 def save_screenshot(frame, stream_id, screenshots_dir):
@@ -68,6 +97,8 @@ def process_stream(stream_id, stream_url, active_streams, occupancy_data,
                 # Update occupancy data for each seat
                 seats_data = []
                 for coord in current_coords:
+                    if is_entrance(coord):
+                        continue
                     seat_id = coord.get("id", "unknown")
                     
                     # Check if seat has camera coordinates (mappings from Feed Selection)

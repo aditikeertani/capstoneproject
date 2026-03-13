@@ -5,6 +5,14 @@ function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
 
+function isEntrance(item) {
+  if (!item) return false;
+  if (item.type === "entrance") return true;
+  if (typeof item.id === "string" && item.id.startsWith("entrance")) return true;
+  if (typeof item.label === "string" && item.label.toLowerCase().startsWith("entrance")) return true;
+  return false;
+}
+
 function seatsToHeatmapPoints(snapshot, displayW, displayH, useFloorplan) {
   if (!snapshot?.seats?.length) return [];
 
@@ -16,7 +24,8 @@ function seatsToHeatmapPoints(snapshot, displayW, displayH, useFloorplan) {
     : (snapshot.frame_height || displayH);
 
   return snapshot.seats
-    .filter(s => Number(s.status) === 1 && !s.id.startsWith('entrance')) // 👉 Filter out entrances from Heatmap calculation
+    // 👉 1. STRICT FILTER: Ignore anything that is an entrance
+    .filter(s => Number(s.status) === 1 && !isEntrance(s))
     .map(s => {
       let nx, ny;
 
@@ -47,14 +56,37 @@ function seatsToHeatmapPoints(snapshot, displayW, displayH, useFloorplan) {
 }
 
 export default function HeatmapOverlay({
-  snapshot,                
-  width: maxWidth = 960,   
+  snapshot,                 
+  width: maxWidth = 960,    
   height: maxHeight = 720,  
-  imageSrc = null,         
+  imageSrc = null,          
 }) {
   const containerRef = useRef(null);
   const heatmapRef = useRef(null);
   const useFloorplan = !!snapshot?.floorplan;
+  const displayLabelMap = useMemo(() => {
+    const seats = snapshot?.seats || [];
+    const sorted = [...seats].sort((a, b) => {
+      const aKey = String(a?.id ?? "");
+      const bKey = String(b?.id ?? "");
+      return aKey.localeCompare(bKey);
+    });
+
+    let seatIndex = 0;
+    let entranceIndex = 0;
+    const map = new Map();
+    sorted.forEach((item, i) => {
+      const key = item?.id ?? `idx-${i}`;
+      if (isEntrance(item)) {
+        entranceIndex += 1;
+        map.set(key, `Entrance ${entranceIndex}`);
+      } else {
+        seatIndex += 1;
+        map.set(key, `Seat ${seatIndex}`);
+      }
+    });
+    return map;
+  }, [snapshot?.seats]);
 
   const sourceW = useFloorplan
     ? (snapshot?.floorplan_width || 1920)
@@ -79,8 +111,8 @@ export default function HeatmapOverlay({
 
     heatmapRef.current = h337.create({
       container: containerRef.current,
-      radius: Math.round(40 * scale),
-      maxOpacity: 0.6,
+      radius: Math.round(50 * scale), // Slightly larger radius for visual blending
+      maxOpacity: 0.55,
       blur: 0.85,
       width: displayW,
       height: displayH,
@@ -91,13 +123,11 @@ export default function HeatmapOverlay({
 
   useEffect(() => {
     if (!heatmapRef.current) return;
-    heatmapRef.current.setData({
-      max: 1,
-      data: points,
-    });
+    heatmapRef.current.setData({ max: 1, data: points });
   }, [points]);
 
   return (
+    <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
     <div style={{ position: "relative", width: displayW, height: displayH }}>
       {imageSrc ? (
         <img
@@ -111,8 +141,10 @@ export default function HeatmapOverlay({
         </div>
       )}
 
+      {/* The cloudy heatmap layer */}
       <div ref={containerRef} style={{ position: "absolute", top: 0, left: 0, width: displayW, height: displayH }} />
 
+      {/* The precise Shapes layer */}
       <svg
         width={displayW}
         height={displayH}
@@ -120,10 +152,13 @@ export default function HeatmapOverlay({
         preserveAspectRatio="none"
         style={{ position: "absolute", top: 0, left: 0, pointerEvents: "auto" }}
       >
-        {snapshot?.seats?.map(item => {
+        {snapshot?.seats?.map((item, i) => {
+          const labelKey = item?.id ?? `idx-${i}`;
+          const displayLabel = displayLabelMap.get(labelKey)
+            || (isEntrance(item) ? "Entrance" : "Seat");
           
-          // 👉 NEW: Intercept Entrance shapes and draw them statically!
-          if (item.id.startsWith("entrance")) {
+          // 👉 2. RENDER ENTRANCES (Cosmetic Only)
+          if (isEntrance(item)) {
             const isHorizontal = item.width >= item.height;
             const barW = 12; 
             const lineT = 6;
@@ -143,56 +178,123 @@ export default function HeatmapOverlay({
                     <rect x={item.x + (item.width/2) - (lineT/2)} y={item.y} width={lineT} height={item.height} fill="#333" />
                   </>
                 )}
-                {/* Optional Label */}
-                <text x={item.x} y={item.y - 10} fontSize="20" fontWeight="bold" fill="#333">{item.label}</text>
+                <text x={item.x + item.width / 2} y={item.y - 12} fontSize="20" fontWeight="bold" textAnchor="middle" fill="#333">
+                  {displayLabel}
+                </text>
               </g>
             );
           }
 
-          // Existing Seat Circle Logic
+          // 👉 3. RENDER SEATS (Warped to exact floorplan shapes)
           const status = Number(item.status);
           const occupied = status === 1;
 
-          let cx, cy;
-          if (useFloorplan) {
-            cx = Number(item.x) + (Number(item.width) || 0) / 2;
-            cy = Number(item.y) + (Number(item.height) || 0) / 2;
+          // Determine dimensions based on whether we are looking at the floorplan or the camera feed
+          let renderX, renderY, renderW, renderH;
+          if (!useFloorplan && item.camera_x != null && item.camera_width > 0) {
+            renderX = Number(item.camera_x);
+            renderY = Number(item.camera_y);
+            renderW = Number(item.camera_width);
+            renderH = Number(item.camera_height);
           } else {
-            const hasCameraCoords = item.camera_x != null && item.camera_width > 0;
-            if (hasCameraCoords) {
-              cx = Number(item.camera_x) + Number(item.camera_width) / 2;
-              cy = Number(item.camera_y) + Number(item.camera_height) / 2;
-            } else {
-              cx = Number(item.x) + (Number(item.width) || 0) / 2;
-              cy = Number(item.y) + (Number(item.height) || 0) / 2;
-            }
+            renderX = Number(item.x);
+            renderY = Number(item.y);
+            renderW = Number(item.width) || 40;
+            renderH = Number(item.height) || 40;
           }
+
+          const cx = renderX + renderW / 2;
+          const cy = renderY + renderH / 2;
+
+          const fillColor = occupied ? "rgba(255, 60, 60, 0.45)" : "rgba(60, 255, 60, 0.25)";
+          const strokeColor = occupied ? "rgba(255, 60, 60, 0.9)" : "rgba(60, 255, 60, 0.7)";
 
           return (
             <g key={item.id} opacity={1}>
-              <circle
-                cx={cx}
-                cy={cy}
-                r={20}
-                fill={occupied ? "rgba(255,60,60,0.45)" : "rgba(60,255,60,0.25)"}
-                stroke={occupied ? "rgba(255,60,60,0.9)" : "rgba(60,255,60,0.7)"}
-                strokeWidth="3"
-              />
+              
+              {/* Draw Ellipse or Rectangle based on the shape drawn in Step 1 */}
+              {item.type === "circle" ? (
+                <ellipse
+                  cx={cx}
+                  cy={cy}
+                  rx={renderW / 2}
+                  ry={renderH / 2}
+                  fill={fillColor}
+                  stroke={strokeColor}
+                  strokeWidth="3"
+                />
+              ) : (
+                <rect
+                  x={renderX}
+                  y={renderY}
+                  width={renderW}
+                  height={renderH}
+                  fill={fillColor}
+                  stroke={strokeColor}
+                  strokeWidth="3"
+                />
+              )}
+
+              {/* Label centered inside the shape */}
               <text
-                x={cx + 26}
-                y={cy + 6}
+                x={cx}
+                y={cy}
                 fontSize="22"
                 fontWeight="bold"
                 fill="rgba(255,255,255,0.9)"
                 stroke="rgba(0,0,0,0.5)"
                 strokeWidth="0.5"
+                textAnchor="middle"          // Centers text horizontally
+                alignmentBaseline="middle"   // Centers text vertically
               >
-                {item.label}
+                {displayLabel}
               </text>
             </g>
           );
         })}
       </svg>
+    </div>
+    <div style={{
+      minWidth: 180,
+      padding: 10,
+      border: "1px solid #ddd",
+      borderRadius: 8,
+      backgroundColor: "#fafafa",
+      color: "#222",
+      fontSize: 12,
+    }}>
+      <div style={{ fontWeight: "bold", marginBottom: 8 }}>Legend</div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <div style={{ width: 24, height: 24, backgroundColor: "rgba(60, 255, 60, 0.25)", border: "2px solid rgba(60, 255, 60, 0.7)" }} />
+        <div>Unoccupied seat</div>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <div style={{ width: 24, height: 24, backgroundColor: "rgba(255, 60, 60, 0.45)", border: "2px solid rgba(255, 60, 60, 0.9)" }} />
+        <div>Occupied seat</div>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <svg width="28" height="18" viewBox="0 0 28 18" aria-hidden="true">
+          <rect x="0" y="0" width="4" height="18" fill="#333" />
+          <rect x="24" y="0" width="4" height="18" fill="#333" />
+          <rect x="0" y="7" width="28" height="4" fill="#333" />
+        </svg>
+        <div>Entrance</div>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{
+          width: 24,
+          height: 24,
+          borderRadius: "50%",
+          background: "radial-gradient(circle, rgba(255,80,80,0.65) 0%, rgba(255,80,80,0.15) 55%, rgba(255,80,80,0) 70%)",
+          border: "1px solid rgba(255,80,80,0.3)"
+        }} />
+        <div>Heat intensity</div>
+      </div>
+    </div>
     </div>
   );
 }

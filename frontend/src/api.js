@@ -82,7 +82,14 @@ export async function captureStream(streamId) {
  */
 export async function getStreamFrame(streamId) {
   const res = await fetch(`${BASE_URL}/streams/${streamId}/frame`);
-  if (!res.ok) throw new Error("Failed to get stream frame");
+  if (!res.ok) {
+    let details = "";
+    try {
+      const data = await res.json();
+      if (data && data.error) details = `: ${data.error}`;
+    } catch {}
+    throw new Error(`Failed to get stream frame${details}`);
+  }
   return res.json();
 }
 
