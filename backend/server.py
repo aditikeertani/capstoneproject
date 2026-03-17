@@ -11,6 +11,7 @@ import numpy as np
 from datetime import datetime
 from collections import defaultdict
 import uuid
+import math
 import torch
 import numpy as np
 from torchvision.transforms import ToTensor, Resize, Compose
@@ -62,6 +63,54 @@ os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 active_streams = {}  # stream_id -> stream_info
 stream_threads = {}  # stream_id -> thread
 occupancy_data = defaultdict(dict)  # stream_id -> {seat_id: occupancy_info}
+
+# Floorplan helpers
+def load_floorplan_asset(floorplan_id):
+    """Load floorplan image and metadata from MongoDB or disk."""
+    floorplan_base64 = None
+    floorplan_width = 0
+    floorplan_height = 0
+    floorplan_seats = None
+
+    if not floorplan_id:
+        return floorplan_base64, floorplan_width, floorplan_height, floorplan_seats
+
+    # Try MongoDB first
+    if MONGO_AVAILABLE and mongo:
+        try:
+            fp_doc = mongo.db.floorplans.find_one({"_id": floorplan_id})
+            if fp_doc:
+                floorplan_base64 = fp_doc.get("image_data")
+                floorplan_width = fp_doc.get("image_width", 0)
+                floorplan_height = fp_doc.get("image_height", 0)
+                floorplan_seats = fp_doc.get("seats")
+        except Exception as e:
+            print(f"Failed to load floorplan from MongoDB: {e}")
+
+    # Fallback: load from disk if not found in MongoDB
+    if not floorplan_base64:
+        floorplan_dir = os.path.join(BACKEND_DIR, 'floorplans')
+        try:
+            if os.path.isdir(floorplan_dir):
+                candidates = [
+                    fname for fname in os.listdir(floorplan_dir)
+                    if fname.startswith(f"floorplan_{floorplan_id}_")
+                ]
+                if candidates:
+                    candidates.sort(
+                        key=lambda fname: os.path.getmtime(os.path.join(floorplan_dir, fname)),
+                        reverse=True
+                    )
+                    fpath = os.path.join(floorplan_dir, candidates[0])
+                    with open(fpath, 'rb') as f:
+                        floorplan_base64 = base64.b64encode(f.read()).decode('utf-8')
+                    fp_img = cv2.imread(fpath)
+                    if fp_img is not None:
+                        floorplan_height, floorplan_width = fp_img.shape[:2]
+        except Exception as e:
+            print(f"Failed to load floorplan from disk: {e}")
+
+    return floorplan_base64, floorplan_width, floorplan_height, floorplan_seats
 
 # Dummy coordinates for seats/tables
 DUMMY_COORDINATES = [
@@ -305,6 +354,7 @@ def submit_floorplan():
     seats_json = request.form.get("seats", "[]")
     stream_url = request.form.get("stream_url", "")
     stream_name = request.form.get("stream_name", "")
+    floor_name = request.form.get("floor_name", "")
     image_width = int(request.form.get("image_width", 0))
     image_height = int(request.form.get("image_height", 0))
     
@@ -320,7 +370,10 @@ def submit_floorplan():
     floorplan_dir = os.path.join(BACKEND_DIR, 'floorplans')
     os.makedirs(floorplan_dir, exist_ok=True)
     
-    floorplan_id = str(uuid.uuid4())[:8]
+    provided_floorplan_id = request.form.get("floorplan_id")
+    if provided_floorplan_id:
+        provided_floorplan_id = str(provided_floorplan_id).strip()
+    floorplan_id = provided_floorplan_id or str(uuid.uuid4())[:8]
     stream_id = str(uuid.uuid4())[:8]
     filename = f"floorplan_{floorplan_id}_{file.filename}"
     filepath = os.path.join(floorplan_dir, filename)
@@ -334,7 +387,8 @@ def submit_floorplan():
         "active": True,
         "created_at": datetime.now().isoformat(),
         "floorplan_id": floorplan_id,
-        "coordinates": seats
+        "coordinates": seats,
+        "floor_name": floor_name
     }
     
     active_streams[stream_id] = stream_info
@@ -345,9 +399,8 @@ def submit_floorplan():
             with open(filepath, 'rb') as f:
                 file_content = f.read()
             
-            # Store floorplan with seats
-            floorplan_doc = {
-                "_id": floorplan_id,
+            # Store floorplan with seats (upsert by floorplan_id)
+            floorplan_update = {
                 "filename": file.filename,
                 "stored_filename": filename,
                 "filepath": filepath,
@@ -357,12 +410,21 @@ def submit_floorplan():
                 "image_width": image_width,
                 "image_height": image_height,
                 "uploaded_at": datetime.now().isoformat(),
+                # Keep last stream details for backward compatibility
                 "stream_id": stream_id,
                 "stream_url": stream_url,
                 "stream_name": stream_name,
+                "floor_name": floor_name,
                 "seats": seats
             }
-            mongo.db.floorplans.insert_one(floorplan_doc)
+            mongo.db.floorplans.update_one(
+                {"_id": floorplan_id},
+                {
+                    "$set": floorplan_update,
+                    "$addToSet": {"stream_ids": stream_id}
+                },
+                upsert=True
+            )
             
             # Store stream config
             stream_doc = {**stream_info, "_id": stream_id}
@@ -659,6 +721,91 @@ def get_frame_from_url():
         "timestamp": datetime.now().isoformat()
     })
 
+@app.route("/api/auto-generate-floorplan", methods=["POST"])
+def auto_generate_floorplan():
+    """Auto-detect table/seat shapes from an uploaded seating chart image."""
+    file = request.files.get("floorplan") or request.files.get("image") or request.files.get("file")
+    if not file:
+        return jsonify({"error": "No floorplan image uploaded"}), 400
+
+    file_bytes = file.read()
+    if not file_bytes:
+        return jsonify({"error": "Uploaded file is empty"}), 400
+
+    np_img = np.frombuffer(file_bytes, np.uint8)
+    img = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
+    if img is None:
+        return jsonify({"error": "Failed to decode image"}), 400
+
+    tracking_mode = request.form.get("trackingMode", "tables").strip().lower()
+    if tracking_mode not in ["tables", "seats"]:
+        tracking_mode = "tables"
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    if tracking_mode == "tables":
+        _, thresh = cv2.threshold(
+            blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+        )
+        contours, _ = cv2.findContours(
+            thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        min_area = 1000
+        max_area = 200000
+    else:
+        edges = cv2.Canny(blurred, 50, 150)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        edges = cv2.dilate(edges, kernel, iterations=1)
+        contours, _ = cv2.findContours(
+            edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE
+        )
+        min_area = 100
+        max_area = 900
+
+    shapes = []
+    timestamp = int(time.time() * 1000)
+
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < min_area or area > max_area:
+            continue
+
+        x, y, w, h = cv2.boundingRect(contour)
+
+        shape_type = "rect"
+        if tracking_mode == "tables":
+            aspect_ratio = w / float(h) if h else 0
+            perimeter = cv2.arcLength(contour, True)
+            approx = (
+                cv2.approxPolyDP(contour, 0.02 * perimeter, True)
+                if perimeter > 0
+                else []
+            )
+            if 0.85 <= aspect_ratio <= 1.15 and perimeter > 0:
+                circularity = (4 * math.pi * area) / (perimeter * perimeter)
+                if circularity >= 0.7 or len(approx) > 6:
+                    shape_type = "circle"
+
+        shapes.append({
+            "id": f"shape_{timestamp}",
+            "type": shape_type,
+            "x": int(x),
+            "y": int(y),
+            "width": int(w),
+            "height": int(h),
+            "label": "Table" if tracking_mode == "tables" else "Seat"
+        })
+
+    # Sort and relabel for stable ordering
+    shapes.sort(key=lambda s: (s["y"], s["x"]))
+    label_prefix = "Table" if tracking_mode == "tables" else "Seat"
+    for idx, shape in enumerate(shapes, start=1):
+        shape["label"] = f"{label_prefix} {idx}"
+        shape["id"] = f"shape_{timestamp}_{idx}"
+
+    return jsonify(shapes)
+
 @app.route("/occupancy", methods=["GET"])
 def get_occupancy():
     """Get current occupancy status for all streams."""
@@ -742,38 +889,8 @@ def get_stream_latest(stream_id):
         print(f"Frame capture failed for heatmap: {e}")
 
     # Retrieve the floorplan image for this stream
-    floorplan_base64 = None
-    floorplan_width = 0
-    floorplan_height = 0
     floorplan_id = stream_info.get("floorplan_id")
-    if floorplan_id:
-        # Try MongoDB first
-        if MONGO_AVAILABLE and mongo:
-            try:
-                fp_doc = mongo.db.floorplans.find_one({"_id": floorplan_id})
-                if fp_doc:
-                    floorplan_base64 = fp_doc.get("image_data")
-                    floorplan_width = fp_doc.get("image_width", 0)
-                    floorplan_height = fp_doc.get("image_height", 0)
-            except Exception as e:
-                print(f"Failed to load floorplan from MongoDB: {e}")
-
-        # Fallback: load from disk if not found in MongoDB
-        if not floorplan_base64:
-            floorplan_dir = os.path.join(BACKEND_DIR, 'floorplans')
-            try:
-                for fname in os.listdir(floorplan_dir):
-                    if fname.startswith(f"floorplan_{floorplan_id}_"):
-                        fpath = os.path.join(floorplan_dir, fname)
-                        with open(fpath, 'rb') as f:
-                            floorplan_base64 = base64.b64encode(f.read()).decode('utf-8')
-                        # Determine image dimensions from the file
-                        fp_img = cv2.imread(fpath)
-                        if fp_img is not None:
-                            floorplan_height, floorplan_width = fp_img.shape[:2]
-                        break
-            except Exception as e:
-                print(f"Failed to load floorplan from disk: {e}")
+    floorplan_base64, floorplan_width, floorplan_height, _ = load_floorplan_asset(floorplan_id)
 
     return jsonify({
         "stream_id": stream_id,
@@ -786,6 +903,86 @@ def get_stream_latest(stream_id):
         "floorplan": floorplan_base64,
         "floorplan_width": floorplan_width,
         "floorplan_height": floorplan_height,
+    })
+
+@app.route("/floorplans/<floorplan_id>/latest", methods=["GET"])
+def get_floorplan_latest(floorplan_id):
+    """Get the latest aggregated occupancy snapshot for a floorplan."""
+    # Collect streams tied to this floorplan
+    streams_for_floor = [
+        s for s in active_streams.values()
+        if s.get("floorplan_id") == floorplan_id
+    ]
+    stream_ids = [s.get("id") for s in streams_for_floor if s.get("id")]
+
+    # Base seat list
+    base_seats = None
+    if streams_for_floor:
+        base_seats = streams_for_floor[0].get("coordinates", None)
+    if base_seats is None:
+        _, _, _, stored_seats = load_floorplan_asset(floorplan_id)
+        base_seats = stored_seats if stored_seats is not None else DUMMY_COORDINATES
+
+    # Aggregate occupancy using occupied-favored rule
+    aggregated = {}
+    for seat in base_seats:
+        seat_id = seat.get("id")
+        if seat_id is None:
+            continue
+        agg_status = 0
+        agg_confidence = 0
+        for stream_id in stream_ids:
+            occ = occupancy_data.get(stream_id, {}).get(seat_id)
+            if not occ:
+                continue
+            occ_status = occ.get("status")
+            if occ_status is None:
+                occ_status = occ.get("class_index")
+            if occ_status == 1:
+                agg_status = 1
+            occ_conf = occ.get("confidence")
+            try:
+                if occ_conf is not None:
+                    agg_confidence = max(agg_confidence, float(occ_conf))
+            except Exception:
+                pass
+        aggregated[seat_id] = {
+            "status": agg_status,
+            "status_name": "Occupied" if agg_status == 1 else "Unoccupied",
+            "confidence": agg_confidence,
+        }
+
+    seats_list = []
+    for seat in base_seats:
+        seat_id = seat.get("id")
+        agg = aggregated.get(seat_id, {})
+        seats_list.append({
+            "id": seat_id,
+            "x": seat.get("x", 0),
+            "y": seat.get("y", 0),
+            "width": seat.get("width", 0),
+            "height": seat.get("height", 0),
+            "label": seat.get("label", ""),
+            "type": seat.get("type"),
+            "status": agg.get("status", 0),
+            "status_name": agg.get("status_name", ""),
+            "confidence": agg.get("confidence", 0),
+        })
+
+    floorplan_base64, floorplan_width, floorplan_height, _ = load_floorplan_asset(floorplan_id)
+
+    return jsonify({
+        "floorplan_id": floorplan_id,
+        "stream_ids": stream_ids,
+        "timestamp": datetime.now().isoformat(),
+        "seats": seats_list,
+        "floorplan": floorplan_base64,
+        "floorplan_width": floorplan_width,
+        "floorplan_height": floorplan_height,
+        # Do not return a camera frame for aggregated views
+        "frame": None,
+        "frame_width": 0,
+        "frame_height": 0,
     })
 
 # Removed /occupancy/history endpoint - occupancy history is not stored in DB

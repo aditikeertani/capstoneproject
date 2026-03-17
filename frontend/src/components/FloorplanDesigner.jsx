@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { submitFloorplanWithSeats } from "../api";
+import { submitFloorplanWithSeats, autoGenerateFloorplan } from "../api";
 
 export default function FloorplanDesigner({
   floors = [],
@@ -21,16 +21,29 @@ export default function FloorplanDesigner({
   const [isDrawing, setIsDrawing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
+  const [isPanning, setIsPanning] = useState(false);
   const [startPos, setStartPos] = useState({ x: 0, y: 0 });
   const [currentShape, setCurrentShape] = useState(null);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [panStart, setPanStart] = useState({ x: 0, y: 0 });
+  const [panOrigin, setPanOrigin] = useState({ x: 0, y: 0 });
 
   // Form states
   const [seatLabel, setSeatLabel] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitResult, setSubmitResult] = useState(null);
+  const [showAutoGenModal, setShowAutoGenModal] = useState(false);
+  const [autoGenLoading, setAutoGenLoading] = useState(false);
+  const [autoGenStatus, setAutoGenStatus] = useState(null);
+  const [trackingMode, setTrackingMode] = useState("tables");
+  const [zoom, setZoom] = useState(1);
 
   const canvasRef = useRef(null);
   const HANDLE_SIZE = 10;
+  const ZOOM_MIN = 0.5;
+  const ZOOM_MAX = 3;
+  const ZOOM_STEP = 0.25;
+  const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
   const selectedFloor = floors.find((floor) => floor.id === selectedFloorId);
   const assignedStreams = streams.filter(
@@ -41,6 +54,15 @@ export default function FloorplanDesigner({
   );
   const savedForSelectedFloor = savedFloorplans.find(
     (floorplan) => floorplan.floorId === selectedFloorId
+  );
+  const hasSubmitShapes = shapes.some((shape) => shape.role !== "table");
+  const displaySavedFloorplans = Array.from(
+    savedFloorplans.reduce((acc, floorplan) => {
+      if (floorplan?.floorId) {
+        acc.set(floorplan.floorId, floorplan);
+      }
+      return acc;
+    }, new Map()).values()
   );
 
   useEffect(() => {
@@ -105,31 +127,55 @@ export default function FloorplanDesigner({
     activeTool,
     includeLabels,
     includeSelection,
+    scale = 1,
+    pan: panOffset = { x: 0, y: 0 },
   }) => {
     if (!ctx) return;
 
     const canvas = ctx.canvas;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(scale, 0, 0, scale, panOffset.x, panOffset.y);
 
     ctx.strokeStyle = "#f0f0f0";
     ctx.lineWidth = 1;
-    for (let i = 0; i < canvas.width; i += 20) {
+    const viewLeft = -panOffset.x / scale;
+    const viewTop = -panOffset.y / scale;
+    const viewRight = viewLeft + canvas.width / scale;
+    const viewBottom = viewTop + canvas.height / scale;
+    const gridSize = 20;
+    const startX = Math.floor(viewLeft / gridSize) * gridSize;
+    const startY = Math.floor(viewTop / gridSize) * gridSize;
+    for (let i = startX; i <= viewRight; i += gridSize) {
       ctx.beginPath();
-      ctx.moveTo(i, 0);
-      ctx.lineTo(i, canvas.height);
+      ctx.moveTo(i, viewTop);
+      ctx.lineTo(i, viewBottom);
       ctx.stroke();
+    }
+    for (let i = startY; i <= viewBottom; i += gridSize) {
       ctx.beginPath();
-      ctx.moveTo(0, i);
-      ctx.lineTo(canvas.width, i);
+      ctx.moveTo(viewLeft, i);
+      ctx.lineTo(viewRight, i);
       ctx.stroke();
     }
 
     const allShapes = currentShapeToRender
       ? [...shapesToRender, currentShapeToRender]
       : shapesToRender;
+
+    const fitText = (text, maxWidth, maxHeight) => {
+      const minSize = 8;
+      const maxSize = 16;
+      let size = Math.min(maxSize, Math.max(minSize, Math.floor(maxHeight)));
+      ctx.font = `${size}px Arial`;
+      while (size > minSize && ctx.measureText(text).width > maxWidth) {
+        size -= 1;
+        ctx.font = `${size}px Arial`;
+      }
+      return size;
+    };
 
     allShapes.forEach((shape) => {
       const isSelected = selectedId === shape.id;
@@ -149,8 +195,8 @@ export default function FloorplanDesigner({
         );
       } else if (shape.type === "entrance") {
         const isHorizontal = Math.abs(shape.width) >= Math.abs(shape.height);
-        const barThickness = 10;
-        const lineThickness = 4;
+        const barThickness = 4;
+        const lineThickness = 2;
 
         ctx.fillStyle = isSelected ? "#2196F3" : "#333";
         if (isHorizontal) {
@@ -201,12 +247,16 @@ export default function FloorplanDesigner({
         ctx.lineWidth = isSelected ? 3 : 2;
         ctx.stroke();
         if (includeLabels) {
+          const text = shape.label || "";
+          const maxW = Math.max(10, shape.width * 0.9);
+          const maxH = Math.max(10, shape.height * 0.6);
+          const fontSize = fitText(text, maxW, maxH);
           ctx.fillStyle = "#000";
-          ctx.font = "14px Arial";
+          ctx.font = `${fontSize}px Arial`;
           ctx.textAlign = "center";
           ctx.textBaseline = "middle";
           ctx.fillText(
-            shape.label || "",
+            text,
             shape.x + shape.width / 2,
             shape.y + shape.height / 2
           );
@@ -238,13 +288,19 @@ export default function FloorplanDesigner({
       activeTool: tool,
       includeLabels: true,
       includeSelection: true,
+      scale: zoom,
+      pan,
     });
-  }, [shapes, currentShape, selectedShapeId, tool]);
+  }, [shapes, currentShape, selectedShapeId, tool, zoom, pan]);
 
   // --- INTERACTION LOGIC ---
   const getMousePos = (e) => {
     const rect = canvasRef.current.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const safeZoom = zoom || 1;
+    return {
+      x: (e.clientX - rect.left - pan.x) / safeZoom,
+      y: (e.clientY - rect.top - pan.y) / safeZoom,
+    };
   };
 
   const handleMouseDown = (e) => {
@@ -301,6 +357,12 @@ export default function FloorplanDesigner({
           return;
         }
       }
+      if (zoom > 1) {
+        setIsPanning(true);
+        setPanStart({ x: e.clientX, y: e.clientY });
+        setPanOrigin({ x: pan.x, y: pan.y });
+        return;
+      }
       setSelectedShapeId(null);
     }
   };
@@ -314,6 +376,10 @@ export default function FloorplanDesigner({
         width: pos.x - startPos.x,
         height: pos.y - startPos.y,
       });
+    } else if (isPanning) {
+      const dx = e.clientX - panStart.x;
+      const dy = e.clientY - panStart.y;
+      setPan({ x: panOrigin.x + dx, y: panOrigin.y + dy });
     } else if (isDragging && selectedShapeId) {
       const dx = pos.x - startPos.x;
       const dy = pos.y - startPos.y;
@@ -343,7 +409,7 @@ export default function FloorplanDesigner({
 
   const handleMouseUp = () => {
     if (isDrawing && currentShape) {
-      const normalizedShape = {
+      let normalizedShape = {
         ...currentShape,
         x:
           currentShape.width < 0
@@ -368,6 +434,7 @@ export default function FloorplanDesigner({
     setIsDrawing(false);
     setIsDragging(false);
     setIsResizing(false);
+    setIsPanning(false);
     setCurrentShape(null);
   };
 
@@ -393,25 +460,286 @@ export default function FloorplanDesigner({
     setSubmitResult(null);
   };
 
+  const handleZoomIn = () => {
+    setZoom((prev) => Math.min(ZOOM_MAX, Number((prev + ZOOM_STEP).toFixed(2))));
+  };
+
+  const handleZoomOut = () => {
+    setZoom((prev) => Math.max(ZOOM_MIN, Number((prev - ZOOM_STEP).toFixed(2))));
+  };
+
+  useEffect(() => {
+    if (zoom <= 1) {
+      setPan({ x: 0, y: 0 });
+    }
+  }, [zoom]);
+
+  const readImageDimensions = (file) =>
+    new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(img.src);
+        resolve({ width: img.naturalWidth, height: img.naturalHeight });
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(img.src);
+        reject(new Error("Failed to read image dimensions"));
+      };
+      img.src = URL.createObjectURL(file);
+    });
+
+  const rectsOverlap = (a, b) =>
+    !(
+      a.x + a.width <= b.x ||
+      a.x >= b.x + b.width ||
+      a.y + a.height <= b.y ||
+      a.y >= b.y + b.height
+    );
+
+  const rectOverlapsEllipse = (rect, ellipse) => {
+    const cx = ellipse.x + ellipse.width / 2;
+    const cy = ellipse.y + ellipse.height / 2;
+    const rx = Math.max(1, ellipse.width / 2);
+    const ry = Math.max(1, ellipse.height / 2);
+
+    const minX = (rect.x - cx) / rx;
+    const maxX = (rect.x + rect.width - cx) / rx;
+    const minY = (rect.y - cy) / ry;
+    const maxY = (rect.y + rect.height - cy) / ry;
+
+    const closestX = clamp(0, Math.min(minX, maxX), Math.max(minX, maxX));
+    const closestY = clamp(0, Math.min(minY, maxY), Math.max(minY, maxY));
+
+    return closestX * closestX + closestY * closestY < 1;
+  };
+
+  const seatOverlapsTable = (seat, table) =>
+    table.type === "circle"
+      ? rectOverlapsEllipse(seat, table)
+      : rectsOverlap(seat, table);
+
+  const seatOverlapsAnyTable = (seat, tables) =>
+    tables.some((table) => seatOverlapsTable(seat, table));
+
+  const generateSeatsAroundTable = (table, canvasWidth, canvasHeight) => {
+    const seats = [];
+    const baseSize = Math.min(table.width, table.height);
+    const seatSize = clamp(Math.round(baseSize * 0.22), 10, 28);
+    const gap = 0;
+
+    const isWithinCanvas = (seat) =>
+      seat.x >= 0 &&
+      seat.y >= 0 &&
+      seat.x + seat.width <= canvasWidth &&
+      seat.y + seat.height <= canvasHeight;
+
+    const addSeatIfValid = (x, y) => {
+      const seat = {
+        type: "rect",
+        x: Math.round(x),
+        y: Math.round(y),
+        width: seatSize,
+        height: seatSize,
+      };
+      if (!isWithinCanvas(seat)) return;
+      if (seatOverlapsTable(seat, table)) return;
+      seats.push(seat);
+    };
+
+    if (table.type === "circle") {
+      const cx = table.x + table.width / 2;
+      const cy = table.y + table.height / 2;
+      const rx = table.width / 2;
+      const ry = table.height / 2;
+      const ringX = rx + seatSize / 2 + gap;
+      const ringY = ry + seatSize / 2 + gap;
+      const circumference =
+        Math.PI *
+        (3 * (ringX + ringY) -
+          Math.sqrt((3 * ringX + ringY) * (ringX + 3 * ringY)));
+      const count = clamp(Math.round(circumference / (seatSize * 1.8)), 4, 14);
+      for (let i = 0; i < count; i++) {
+        const angle = (2 * Math.PI * i) / count;
+        const seatCx = cx + Math.cos(angle) * ringX;
+        const seatCy = cy + Math.sin(angle) * ringY;
+        addSeatIfValid(seatCx - seatSize / 2, seatCy - seatSize / 2);
+      }
+      return seats;
+    }
+
+    const countX = clamp(Math.round(table.width / (seatSize * 2)), 1, 6);
+    const countY = clamp(Math.round(table.height / (seatSize * 2)), 1, 6);
+
+    const totalSeatWidth = countX * seatSize + (countX - 1) * gap;
+    const startX = table.x + (table.width - totalSeatWidth) / 2;
+    const topY = table.y - seatSize - gap;
+    const bottomY = table.y + table.height + gap;
+    for (let i = 0; i < countX; i++) {
+      const sx = startX + i * (seatSize + gap);
+      addSeatIfValid(sx, topY);
+      addSeatIfValid(sx, bottomY);
+    }
+
+    const totalSeatHeight = countY * seatSize + (countY - 1) * gap;
+    const startY = table.y + (table.height - totalSeatHeight) / 2;
+    const leftX = table.x - seatSize - gap;
+    const rightX = table.x + table.width + gap;
+    for (let i = 0; i < countY; i++) {
+      const sy = startY + i * (seatSize + gap);
+      addSeatIfValid(leftX, sy);
+      addSeatIfValid(rightX, sy);
+    }
+
+    return seats;
+  };
+
+  const handleAutoGenerateClick = () => {
+    setAutoGenStatus(null);
+    setShowAutoGenModal(true);
+  };
+
+  const handleAutoGenerateFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+
+    setShowAutoGenModal(false);
+    setAutoGenLoading(true);
+    setAutoGenStatus(null);
+
+    try {
+      const dims = await readImageDimensions(file);
+      const canvasWidth = canvasRef.current?.width || 800;
+      const canvasHeight = canvasRef.current?.height || 500;
+      const scaleX = dims.width ? canvasWidth / dims.width : 1;
+      const scaleY = dims.height ? canvasHeight / dims.height : 1;
+      const tableScale = trackingMode === "seats" ? 1.0 : 1.2;
+      const timestamp = Date.now();
+
+      const scaleTableShape = (shape) => {
+        const nextWidth = Math.round(shape.width * tableScale);
+        const nextHeight = Math.round(shape.height * tableScale);
+        const dx = Math.round((nextWidth - shape.width) / 2);
+        const dy = Math.round((nextHeight - shape.height) / 2);
+        const nextX = clamp(shape.x - dx, 0, Math.max(0, canvasWidth - nextWidth));
+        const nextY = clamp(shape.y - dy, 0, Math.max(0, canvasHeight - nextHeight));
+        return {
+          ...shape,
+          x: nextX,
+          y: nextY,
+          width: nextWidth,
+          height: nextHeight,
+        };
+      };
+
+      const scaleRawShapes = (rawShapes, labelPrefix, options = {}) => {
+        const { role, applyTableScale } = options;
+        const base = rawShapes.map((shape, idx) => {
+          const nextShape = {
+            id: `shape_${timestamp}_${labelPrefix.toLowerCase()}_${idx + 1}`,
+            type: shape.type || "rect",
+            x: Math.round((shape.x || 0) * scaleX),
+            y: Math.round((shape.y || 0) * scaleY),
+            width: Math.round((shape.width || 40) * scaleX),
+            height: Math.round((shape.height || 40) * scaleY),
+            label: `${labelPrefix} ${idx + 1}`,
+          };
+          if (role) nextShape.role = role;
+          return nextShape;
+        });
+        if (!applyTableScale) return base;
+        return base.map(scaleTableShape);
+      };
+
+      let nextShapes = [];
+      let statusMessage = "";
+
+      if (trackingMode === "seats") {
+        const [tablesData, seatsData] = await Promise.all([
+          autoGenerateFloorplan(file, "tables"),
+          autoGenerateFloorplan(file, "seats"),
+        ]);
+        const rawTables = tablesData?.shapes || tablesData || [];
+        const rawSeats = seatsData?.shapes || seatsData || [];
+
+        const tableShapes = scaleRawShapes(rawTables, "Table", {
+          role: "table",
+          applyTableScale: true,
+        });
+
+        const detectedSeats = scaleRawShapes(rawSeats, "Seat").filter(
+          (seat) => !seatOverlapsAnyTable(seat, tableShapes)
+        );
+
+        const generatedSeats = tableShapes.flatMap((table) =>
+          generateSeatsAroundTable(table, canvasWidth, canvasHeight)
+        );
+
+        const isDuplicateSeat = (seat, existing) => {
+          const cx1 = seat.x + seat.width / 2;
+          const cy1 = seat.y + seat.height / 2;
+          const cx2 = existing.x + existing.width / 2;
+          const cy2 = existing.y + existing.height / 2;
+          const dx = cx1 - cx2;
+          const dy = cy1 - cy2;
+          const dist = Math.hypot(dx, dy);
+          return dist < Math.min(seat.width, existing.width) * 0.6;
+        };
+
+        const seatShapes = [...detectedSeats];
+        generatedSeats.forEach((seat) => {
+          if (seatOverlapsAnyTable(seat, tableShapes)) return;
+          if (seatShapes.some((existing) => isDuplicateSeat(seat, existing))) return;
+          seatShapes.push(seat);
+        });
+
+        const labeledSeats = seatShapes.map((seat, idx) => ({
+          ...seat,
+          id: `shape_${timestamp}_seat_${idx + 1}`,
+          label: `Seat ${idx + 1}`,
+        }));
+
+        nextShapes = [...tableShapes, ...labeledSeats];
+        statusMessage = `Auto-generated ${labeledSeats.length} seats with ${tableShapes.length} tables.`;
+      } else {
+        const data = await autoGenerateFloorplan(file, trackingMode);
+        const rawShapes = data?.shapes || data || [];
+        nextShapes = scaleRawShapes(rawShapes, "Table", { applyTableScale: true });
+        statusMessage = `Auto-generated ${nextShapes.length} tables.`;
+      }
+
+      setShapes(nextShapes);
+      setSelectedShapeId(null);
+      setSeatLabel("");
+      setTool("select");
+      setAutoGenStatus({
+        success: true,
+        message: statusMessage,
+      });
+    } catch (error) {
+      setAutoGenStatus({
+        success: false,
+        message: error.message || "Auto-generate failed.",
+      });
+    }
+
+    setAutoGenLoading(false);
+  };
+
   const handleSubmit = async () => {
     if (!selectedFloorId) {
       alert("Please select a floor before saving.");
       return;
     }
-    if (shapes.length === 0) {
-      alert("Please draw at least one shape before saving.");
+    const submitShapes = shapes.filter((shape) => shape.role !== "table");
+    if (submitShapes.length === 0) {
+      alert("Please draw at least one seat before saving.");
       return;
     }
     if (assignedStreams.length === 0) {
       alert("Please assign a stream to this floor in Step 1.");
       return;
     }
-    const chosenStream = selectedStream || assignedStreams[0];
-    if (!chosenStream) {
-      alert("No stream available for this floor.");
-      return;
-    }
-
     setIsSubmitting(true);
 
     const exportCanvas = document.createElement("canvas");
@@ -426,6 +754,8 @@ export default function FloorplanDesigner({
       activeTool: tool,
       includeLabels: false, // remove labels from exported floorplan
       includeSelection: false,
+      scale: 1,
+      pan: { x: 0, y: 0 },
     });
 
     const previewUrl = exportCanvas.toDataURL("image/png");
@@ -434,35 +764,77 @@ export default function FloorplanDesigner({
       const imageFile = new File([blob], "custom_floorplan.png", {
         type: "image/png",
       });
+
+      const streamsToSubmit = assignedStreams.length
+        ? assignedStreams
+        : selectedStream
+        ? [selectedStream]
+        : [];
+
+      if (streamsToSubmit.length === 0) {
+        setSubmitResult({
+          success: false,
+          error: "No stream available for this floor.",
+        });
+        setIsSubmitting(false);
+        return;
+      }
+
       try {
-        const streamName =
-          chosenStream?.name || chosenStream?.id || "Unnamed Stream";
-        const result = await submitFloorplanWithSeats(
-          imageFile,
-          shapes,
-          chosenStream?.url,
-          streamName,
-          canvasRef.current.width,
-          canvasRef.current.height
+        const results = await Promise.allSettled(
+          streamsToSubmit.map(async (stream) => {
+            const streamName = stream?.name || stream?.id || "Unnamed Stream";
+            const result = await submitFloorplanWithSeats(
+              imageFile,
+              submitShapes,
+              stream?.url,
+              streamName,
+              canvasRef.current.width,
+              canvasRef.current.height,
+              selectedFloorId,
+              selectedFloor?.name || ""
+            );
+            return { result, stream, streamName };
+          })
         );
-        setSubmitResult({ success: true, data: result });
-        if (setSavedFloorplans) {
+
+        const successes = results
+          .filter((item) => item.status === "fulfilled")
+          .map((item) => item.value);
+        const failures = results.filter((item) => item.status === "rejected");
+
+        if (successes.length > 0 && setSavedFloorplans) {
+          const first = successes[0];
+          const entry = {
+            id: first?.result?.floorplan_id || selectedFloorId,
+            floorId: selectedFloorId,
+            floorName: selectedFloor?.name || selectedFloorId,
+            streamCount: successes.length,
+            streamIds: successes.map((item) => item.stream?.id).filter(Boolean),
+            streamNames: successes.map((item) => item.streamName).filter(Boolean),
+            previewUrl,
+            savedAt: new Date().toISOString(),
+            backendFloorplanId: first?.result?.floorplan_id,
+          };
+
           setSavedFloorplans((prev) => {
             const next = prev.filter(
               (floorplan) => floorplan.floorId !== selectedFloorId
             );
-            return [
-              ...next,
-              {
-                id: result?.id || `saved_${Date.now()}`,
-                floorId: selectedFloorId,
-                floorName: selectedFloor?.name || selectedFloorId,
-                streamId: chosenStream?.id,
-                streamName: streamName,
-                previewUrl,
-                savedAt: new Date().toISOString(),
-              },
-            ];
+            return [...next, entry];
+          });
+        }
+
+        if (failures.length > 0) {
+          const firstError = failures[0]?.reason?.message || "Some saves failed.";
+          setSubmitResult({
+            success: false,
+            error: `Saved ${successes.length}/${streamsToSubmit.length}. ${firstError}`,
+          });
+        } else {
+          setSubmitResult({
+            success: true,
+            data: { savedCount: successes.length },
           });
         }
       } catch (error) {
@@ -529,8 +901,14 @@ export default function FloorplanDesigner({
                   border: "none",
                   borderRadius: 4,
                   cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
                 }}
               >
+                <span aria-hidden="true" style={{ fontSize: 14 }}>
+                  👉
+                </span>
                 Select
               </button>
               <button
@@ -542,8 +920,21 @@ export default function FloorplanDesigner({
                   border: "none",
                   borderRadius: 4,
                   cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
                 }}
               >
+                <span
+                  aria-hidden="true"
+                  style={{
+                    width: 16,
+                    height: 12,
+                    border: tool === "rect" ? "2px solid #fff" : "2px solid #2e7d32",
+                    borderRadius: 2,
+                    boxSizing: "border-box",
+                  }}
+                />
                 Seat (Rect)
               </button>
               <button
@@ -555,8 +946,21 @@ export default function FloorplanDesigner({
                   border: "none",
                   borderRadius: 4,
                   cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
                 }}
               >
+                <span
+                  aria-hidden="true"
+                  style={{
+                    width: 14,
+                    height: 14,
+                    border: tool === "circle" ? "2px solid #fff" : "2px solid #2e7d32",
+                    borderRadius: "50%",
+                    boxSizing: "border-box",
+                  }}
+                />
                 Seat (Circle)
               </button>
               <button
@@ -568,11 +972,82 @@ export default function FloorplanDesigner({
                   border: "none",
                   borderRadius: 4,
                   cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
                 }}
               >
+                <span aria-hidden="true" style={{ fontSize: 14 }}>
+                  🚪
+                </span>
                 Entrance
               </button>
+              <button
+                onClick={handleAutoGenerateClick}
+                disabled={autoGenLoading}
+                style={{
+                  padding: "8px 12px",
+                  backgroundColor: autoGenLoading ? "#b39ddb" : "#673AB7",
+                  color: "white",
+                  border: "none",
+                  borderRadius: 4,
+                  cursor: autoGenLoading ? "not-allowed" : "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                }}
+              >
+                Auto-Generate Floorplan
+              </button>
+              <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <button
+                  onClick={handleZoomOut}
+                  disabled={zoom <= ZOOM_MIN}
+                  style={{
+                    padding: "6px 10px",
+                    backgroundColor: zoom <= ZOOM_MIN ? "#ccc" : "#2196F3",
+                    color: "white",
+                    border: "none",
+                    borderRadius: 4,
+                    cursor: zoom <= ZOOM_MIN ? "not-allowed" : "pointer",
+                  }}
+                >
+                  Zoom -
+                </button>
+                <div style={{ minWidth: 48, textAlign: "center", fontSize: 12 }}>
+                  {Math.round(zoom * 100)}%
+                </div>
+                <button
+                  onClick={handleZoomIn}
+                  disabled={zoom >= ZOOM_MAX}
+                  style={{
+                    padding: "6px 10px",
+                    backgroundColor: zoom >= ZOOM_MAX ? "#ccc" : "#2196F3",
+                    color: "white",
+                    border: "none",
+                    borderRadius: 4,
+                    cursor: zoom >= ZOOM_MAX ? "not-allowed" : "pointer",
+                  }}
+                >
+                  Zoom +
+                </button>
+              </div>
             </div>
+
+            {autoGenStatus && (
+              <div
+                style={{
+                  marginBottom: 10,
+                  padding: 8,
+                  borderRadius: 4,
+                  fontSize: 12,
+                  backgroundColor: autoGenStatus.success ? "#e8f5e9" : "#ffebee",
+                  color: autoGenStatus.success ? "#2e7d32" : "#c62828",
+                }}
+              >
+                {autoGenStatus.message}
+              </div>
+            )}
 
             <div
               style={{
@@ -591,7 +1066,14 @@ export default function FloorplanDesigner({
                 onMouseUp={handleMouseUp}
                 onMouseLeave={handleMouseUp}
                 style={{
-                  cursor: tool === "select" ? "default" : "crosshair",
+                  cursor:
+                    tool === "select"
+                      ? isPanning
+                        ? "grabbing"
+                        : zoom > 1
+                        ? "grab"
+                        : "default"
+                      : "crosshair",
                   display: "block",
                 }}
               />
@@ -713,7 +1195,7 @@ export default function FloorplanDesigner({
                 }}
               >
                 {submitResult.success
-                  ? "Design saved."
+                  ? `Design saved for ${submitResult.data?.savedCount || 1} stream(s).`
                   : `Error: ${submitResult.error}`}
               </div>
             )}
@@ -721,7 +1203,7 @@ export default function FloorplanDesigner({
             <button
               onClick={handleSubmit}
               disabled={
-                shapes.length === 0 ||
+                !hasSubmitShapes ||
                 assignedStreams.length === 0 ||
                 isSubmitting
               }
@@ -729,7 +1211,7 @@ export default function FloorplanDesigner({
                 width: "100%",
                 padding: 10,
                 backgroundColor:
-                  shapes.length === 0 ||
+                  !hasSubmitShapes ||
                   assignedStreams.length === 0 ||
                   isSubmitting
                     ? "#ccc"
@@ -738,7 +1220,7 @@ export default function FloorplanDesigner({
                 border: "none",
                 borderRadius: 4,
                 cursor:
-                  shapes.length === 0 ||
+                  !hasSubmitShapes ||
                   assignedStreams.length === 0 ||
                   isSubmitting
                     ? "not-allowed"
@@ -754,7 +1236,7 @@ export default function FloorplanDesigner({
 
       <div style={{ padding: 12, border: "1px solid #eee", borderRadius: 8 }}>
         <h3 style={{ marginTop: 0 }}>Saved Floorplans</h3>
-        {savedFloorplans.length === 0 ? (
+        {displaySavedFloorplans.length === 0 ? (
           <div style={{ color: "#666", fontSize: 13 }}>
             No saved floorplans yet.
           </div>
@@ -766,7 +1248,7 @@ export default function FloorplanDesigner({
               gap: 12,
             }}
           >
-            {savedFloorplans.map((floorplan) => (
+            {displaySavedFloorplans.map((floorplan) => (
               <div
                 key={floorplan.id}
                 style={{
@@ -809,7 +1291,7 @@ export default function FloorplanDesigner({
                   {floorplan.floorName || floorplan.floorId}
                 </div>
                 <div style={{ fontSize: 12, color: "#666" }}>
-                  Stream: {floorplan.streamName || floorplan.streamId}
+                  Cameras: {floorplan.streamCount ?? (floorplan.streamIds?.length || 0)}
                 </div>
                 <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
                   <button
@@ -852,6 +1334,85 @@ export default function FloorplanDesigner({
           </div>
         )}
       </div>
+
+      {showAutoGenModal && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            backgroundColor: "rgba(0, 0, 0, 0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 9999,
+            padding: 16,
+          }}
+        >
+          <div
+            style={{
+              width: "100%",
+              maxWidth: 520,
+              backgroundColor: "white",
+              borderRadius: 8,
+              padding: 20,
+              boxShadow: "0 10px 30px rgba(0,0,0,0.2)",
+            }}
+          >
+            <h3 style={{ marginTop: 0 }}>Auto-Generate Floorplan</h3>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontWeight: "bold", marginBottom: 6 }}>
+                What would you like to track?
+              </div>
+              <label style={{ display: "block", marginBottom: 6, fontSize: 14 }}>
+                <input
+                  type="radio"
+                  name="trackingMode"
+                  value="tables"
+                  checked={trackingMode === "tables"}
+                  onChange={() => setTrackingMode("tables")}
+                  style={{ marginRight: 6 }}
+                />
+                Tables (Entire table occupancy)
+              </label>
+              <label style={{ display: "block", fontSize: 14 }}>
+                <input
+                  type="radio"
+                  name="trackingMode"
+                  value="seats"
+                  checked={trackingMode === "seats"}
+                  onChange={() => setTrackingMode("seats")}
+                  style={{ marginRight: 6 }}
+                />
+                Seats (Individual chair occupancy)
+              </label>
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={handleAutoGenerateFile}
+                disabled={autoGenLoading}
+              />
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <button
+                onClick={() => setShowAutoGenModal(false)}
+                style={{
+                  padding: "8px 12px",
+                  backgroundColor: "#e0e0e0",
+                  border: "none",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

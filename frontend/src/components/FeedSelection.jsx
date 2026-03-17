@@ -10,16 +10,25 @@ export default function FeedSelection() {
   const [startPoint, setStartPoint] = useState(null);
   const [currentBox, setCurrentBox] = useState(null);
   const [selectedSeatId, setSelectedSeatId] = useState(null);
-  const [seatMappings, setSeatMappings] = useState({});
+  const [seatMappingsByStream, setSeatMappingsByStream] = useState({});
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState(null);
   const [error, setError] = useState("");
-  const [scale, setScale] = useState(1);
+  const [fitScale, setFitScale] = useState(1);
+  const [zoom, setZoom] = useState(1);
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
   const imageRef = useRef(null);
-  console.log("DATA BEING SENT:", seatMappings);
+  const ZOOM_MIN = 0.5;
+  const ZOOM_MAX = 3;
+  const ZOOM_STEP = 0.25;
+  const appliedScale = fitScale * zoom;
+  const currentMappings = selectedStreamId
+    ? (seatMappingsByStream[selectedStreamId] || {})
+    : {};
+
+  console.log("DATA BEING SENT:", currentMappings);
 
   const isEntrance = (item) => {
     if (!item) return false;
@@ -64,13 +73,23 @@ export default function FeedSelection() {
       setSeats(mappableSeats);
       
       // Initialize mappings for seats that don't have one yet
-      const newMappings = { ...seatMappings };
+      const existingMappings = seatMappingsByStream[selectedStreamId] || {};
+      const allowedIds = new Set(mappableSeats.map((seat) => seat.id));
+      const newMappings = Object.keys(existingMappings).reduce((acc, seatId) => {
+        if (allowedIds.has(seatId)) {
+          acc[seatId] = existingMappings[seatId];
+        }
+        return acc;
+      }, {});
       mappableSeats.forEach(seat => {
         if (!newMappings[seat.id]) {
           newMappings[seat.id] = null;
         }
       });
-      setSeatMappings(newMappings);
+      setSeatMappingsByStream(prev => ({
+        ...prev,
+        [selectedStreamId]: newMappings
+      }));
     } catch (e) {
       setError("Failed to load frame: " + e.message);
     }
@@ -78,13 +97,26 @@ export default function FeedSelection() {
     setLoading(false);
   };
 
+  const handleZoomIn = () => {
+    setZoom((prev) =>
+      Math.min(ZOOM_MAX, Number((prev + ZOOM_STEP).toFixed(2)))
+    );
+  };
+
+  const handleZoomOut = () => {
+    setZoom((prev) =>
+      Math.max(ZOOM_MIN, Number((prev - ZOOM_STEP).toFixed(2)))
+    );
+  };
+
   // Get mouse position relative to canvas (scaled)
   const getMousePos = (e) => {
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
+    const safeScale = appliedScale || 1;
     return {
-      x: (e.clientX - rect.left) / scale,
-      y: (e.clientY - rect.top) / scale
+      x: (e.clientX - rect.left) / safeScale,
+      y: (e.clientY - rect.top) / safeScale
     };
   };
 
@@ -115,13 +147,16 @@ export default function FeedSelection() {
     
     // Only save if box is large enough
     if (currentBox.width > 10 && currentBox.height > 10) {
-      setSeatMappings(prev => ({
+      setSeatMappingsByStream(prev => ({
         ...prev,
-        [selectedSeatId]: {
-          x: Math.round(currentBox.x),
-          y: Math.round(currentBox.y),
-          width: Math.round(currentBox.width),
-          height: Math.round(currentBox.height)
+        [selectedStreamId]: {
+          ...(prev[selectedStreamId] || {}),
+          [selectedSeatId]: {
+            x: Math.round(currentBox.x),
+            y: Math.round(currentBox.y),
+            width: Math.round(currentBox.width),
+            height: Math.round(currentBox.height)
+          }
         }
       }));
     }
@@ -136,70 +171,71 @@ export default function FeedSelection() {
     const canvas = canvasRef.current;
     const container = containerRef.current;
     if (!canvas || !container || !frameData) return;
-    
+
     const ctx = canvas.getContext("2d");
     const img = imageRef.current;
-    
+
     if (!img) return;
-    
-    img.onload = () => {
-      // Calculate scale
+
+    const draw = () => {
+      const imgW = img.naturalWidth || img.width;
+      const imgH = img.naturalHeight || img.height;
+      if (!imgW || !imgH) return;
+
       const containerWidth = container.clientWidth;
       const containerHeight = container.clientHeight;
-      const scaleX = containerWidth / img.width;
-      const scaleY = containerHeight / img.height;
-      const newScale = Math.min(scaleX, scaleY, 1);
-      setScale(newScale);
-      
-      canvas.width = img.width * newScale;
-      canvas.height = img.height * newScale;
-      
+      const scaleX = containerWidth / imgW;
+      const scaleY = containerHeight / imgH;
+      const baseScale = Math.min(scaleX, scaleY, 1);
+      setFitScale(baseScale);
+
+      const renderScale = baseScale * zoom;
+
+      canvas.width = imgW * renderScale;
+      canvas.height = imgH * renderScale;
+
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      
+
       // Draw existing mappings
-      Object.entries(seatMappings).forEach(([seatId, mapping]) => {
+      Object.entries(currentMappings).forEach(([seatId, mapping]) => {
         if (!mapping) return;
-        
-        const seat = seats.find(s => s.id === seatId);
+
         const isSelected = seatId === selectedSeatId;
-        
-        const sx = mapping.x * newScale;
-        const sy = mapping.y * newScale;
-        const sw = mapping.width * newScale;
-        const sh = mapping.height * newScale;
-        
+
+        const sx = mapping.x * renderScale;
+        const sy = mapping.y * renderScale;
+        const sw = mapping.width * renderScale;
+        const sh = mapping.height * renderScale;
+
         ctx.strokeStyle = isSelected ? "#2196F3" : "#4CAF50";
         ctx.lineWidth = isSelected ? 3 : 2;
         ctx.strokeRect(sx, sy, sw, sh);
-        
+
         ctx.fillStyle = isSelected ? "rgba(33, 150, 243, 0.3)" : "rgba(76, 175, 80, 0.3)";
         ctx.fillRect(sx, sy, sw, sh);
-        
-        // Draw label
-        if (seat) {
-          ctx.fillStyle = "#fff";
-          ctx.font = `bold ${Math.max(12, 14 * newScale)}px Arial`;
-          ctx.fillText(seat.label, sx + 5, sy + 18);
-        }
+
+        // Intentionally no labels drawn on the frame
       });
-      
+
       // Draw current box
       if (currentBox) {
         ctx.strokeStyle = "#FF5722";
         ctx.lineWidth = 2;
         ctx.setLineDash([5, 5]);
         ctx.strokeRect(
-          currentBox.x * newScale,
-          currentBox.y * newScale,
-          currentBox.width * newScale,
-          currentBox.height * newScale
+          currentBox.x * renderScale,
+          currentBox.y * renderScale,
+          currentBox.width * renderScale,
+          currentBox.height * renderScale
         );
         ctx.setLineDash([]);
       }
     };
-    
+
+    img.onload = draw;
     img.src = `data:image/jpeg;base64,${frameData.frame}`;
-  }, [frameData, seatMappings, currentBox, selectedSeatId, seats]);
+    if (img.complete) draw();
+  }, [frameData, currentMappings, currentBox, selectedSeatId, seats, zoom]);
 
   // Save mappings to database
   const handleSaveMappings = async () => {
@@ -208,14 +244,16 @@ export default function FeedSelection() {
     setSaving(true);
     setSaveResult(null);
     
+    const mappingsToSave = currentMappings;
     try {
-      const result = await saveSeatMappings(selectedStreamId, seatMappings);
+      const result = await saveSeatMappings(selectedStreamId, mappingsToSave);
       setSaveResult({ success: true, data: result });
       console.log("Mappings saved:", result);
       
       // Update local seats with camera coordinates
       if (result.updated_seats) {
-        setSeats(result.updated_seats);
+        const mappableSeats = result.updated_seats.filter(s => !isEntrance(s));
+        setSeats(mappableSeats);
       }
     } catch (e) {
       setSaveResult({ success: false, error: e.message });
@@ -226,7 +264,7 @@ export default function FeedSelection() {
   };
 
   const getSeatStatus = (seatId) => {
-    if (seatMappings[seatId]) return "mapped";
+    if (currentMappings[seatId]) return "mapped";
     return "unmapped";
   };
 
@@ -286,6 +324,39 @@ export default function FeedSelection() {
           >
             Refresh Streams
           </button>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <button
+              onClick={handleZoomOut}
+              disabled={!frameData || zoom <= ZOOM_MIN}
+              style={{
+                padding: "6px 10px",
+                backgroundColor: !frameData || zoom <= ZOOM_MIN ? "#ccc" : "#2196F3",
+                color: "white",
+                border: "none",
+                borderRadius: 4,
+                cursor: !frameData || zoom <= ZOOM_MIN ? "not-allowed" : "pointer"
+              }}
+            >
+              Zoom -
+            </button>
+            <div style={{ minWidth: 48, textAlign: "center", fontSize: 12 }}>
+              {Math.round(zoom * 100)}%
+            </div>
+            <button
+              onClick={handleZoomIn}
+              disabled={!frameData || zoom >= ZOOM_MAX}
+              style={{
+                padding: "6px 10px",
+                backgroundColor: !frameData || zoom >= ZOOM_MAX ? "#ccc" : "#2196F3",
+                color: "white",
+                border: "none",
+                borderRadius: 4,
+                cursor: !frameData || zoom >= ZOOM_MAX ? "not-allowed" : "pointer"
+              }}
+            >
+              Zoom +
+            </button>
+          </div>
         </div>
       </div>
 
@@ -372,7 +443,7 @@ export default function FeedSelection() {
           flexShrink: 0
         }}>
           <h3 style={{ margin: "0 0 10px 0", fontSize: 16 }}>
-            Seats to Map ({seats.filter(s => seatMappings[s.id]).length}/{seats.length})
+            Seats to Map ({seats.filter(s => currentMappings[s.id]).length}/{seats.length})
           </h3>
           
           {!frameData ? (
@@ -413,7 +484,6 @@ export default function FeedSelection() {
                       }}
                     >
                       <div>
-                        <strong>{seat.label}</strong>
                         <div style={{ fontSize: 11, color: "#666" }}>
                           Floorplan: ({seat.x}, {seat.y})
                         </div>
@@ -441,13 +511,26 @@ export default function FeedSelection() {
                   marginBottom: 10,
                   fontSize: 13
                 }}>
-                  <strong>Selected:</strong> {seats.find(s => s.id === selectedSeatId)?.label}
+                  <strong>Selected seat</strong>
+                  {seats.find(s => s.id === selectedSeatId) && (
+                    <div style={{ marginTop: 4, fontSize: 12, color: "#555" }}>
+                      Floorplan: (
+                      {seats.find(s => s.id === selectedSeatId)?.x},{" "}
+                      {seats.find(s => s.id === selectedSeatId)?.y})
+                    </div>
+                  )}
                   <div style={{ marginTop: 5 }}>
                     Draw a box on the camera frame to map this seat
                   </div>
-                  {seatMappings[selectedSeatId] && (
+                  {currentMappings[selectedSeatId] && (
                     <button
-                      onClick={() => setSeatMappings(prev => ({ ...prev, [selectedSeatId]: null }))}
+                      onClick={() => setSeatMappingsByStream(prev => ({
+                        ...prev,
+                        [selectedStreamId]: {
+                          ...(prev[selectedStreamId] || {}),
+                          [selectedSeatId]: null
+                        }
+                      }))}
                       style={{
                         marginTop: 8,
                         padding: "4px 8px",
@@ -485,15 +568,15 @@ export default function FeedSelection() {
               {/* Save Button */}
               <button
                 onClick={handleSaveMappings}
-                disabled={Object.values(seatMappings).every(v => !v) || saving}
+                disabled={Object.values(currentMappings).every(v => !v) || saving}
                 style={{
                   width: "100%",
                   padding: 10,
-                  backgroundColor: (Object.values(seatMappings).some(v => v) && !saving) ? "#4CAF50" : "#ccc",
+                  backgroundColor: (Object.values(currentMappings).some(v => v) && !saving) ? "#4CAF50" : "#ccc",
                   color: "white",
                   border: "none",
                   borderRadius: 4,
-                  cursor: (Object.values(seatMappings).some(v => v) && !saving) ? "pointer" : "not-allowed",
+                  cursor: (Object.values(currentMappings).some(v => v) && !saving) ? "pointer" : "not-allowed",
                   fontSize: 14,
                   fontWeight: "bold"
                 }}

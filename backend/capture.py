@@ -110,7 +110,11 @@ def process_stream(stream_id, stream_url, active_streams, occupancy_data,
                     print(f"  🔍 Seat {coord.get('label', seat_id)}: camera_x={camera_x}, camera_y={camera_y}, camera_w={camera_width}, camera_h={camera_height}")
                     
                     # If camera coordinates exist, crop that region for prediction
-                    if all(v is not None and v > 0 for v in [camera_x, camera_y, camera_width, camera_height]):
+                    has_camera_coords = all(
+                        v is not None and v > 0 for v in [camera_x, camera_y, camera_width, camera_height]
+                    )
+
+                    if has_camera_coords:
                         # Ensure coordinates are within frame bounds
                         x1 = max(0, int(camera_x))
                         y1 = max(0, int(camera_y))
@@ -131,10 +135,11 @@ def process_stream(stream_id, stream_url, active_streams, occupancy_data,
                             prediction = predict_fn(frame)
                             print(f"Predicted seat {coord.get('label', seat_id)}: {prediction['class_name']} (full frame - crop failed)")
                     else:
-                        # No camera coordinates, use full frame prediction
-                        prediction = predict_fn(frame)
-                        print(f"  ❌ No camera coords → full frame prediction")
-                        print(f"Predicted seat {coord.get('label', seat_id)}: {prediction['class_name']} (full frame - no mapping)")
+                        # No camera coordinates: skip prediction for this seat in this stream
+                        if seat_id in occupancy_data.get(stream_id, {}):
+                            occupancy_data[stream_id].pop(seat_id, None)
+                        print(f"  ❌ No camera coords → skipping prediction for {coord.get('label', seat_id)}")
+                        continue
                     
                     # Build seat result with all coordinates
                     seat_result = {

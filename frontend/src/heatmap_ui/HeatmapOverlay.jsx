@@ -64,29 +64,6 @@ export default function HeatmapOverlay({
   const containerRef = useRef(null);
   const heatmapRef = useRef(null);
   const useFloorplan = !!snapshot?.floorplan;
-  const displayLabelMap = useMemo(() => {
-    const seats = snapshot?.seats || [];
-    const sorted = [...seats].sort((a, b) => {
-      const aKey = String(a?.id ?? "");
-      const bKey = String(b?.id ?? "");
-      return aKey.localeCompare(bKey);
-    });
-
-    let seatIndex = 0;
-    let entranceIndex = 0;
-    const map = new Map();
-    sorted.forEach((item, i) => {
-      const key = item?.id ?? `idx-${i}`;
-      if (isEntrance(item)) {
-        entranceIndex += 1;
-        map.set(key, `Entrance ${entranceIndex}`);
-      } else {
-        seatIndex += 1;
-        map.set(key, `Seat ${seatIndex}`);
-      }
-    });
-    return map;
-  }, [snapshot?.seats]);
 
   const sourceW = useFloorplan
     ? (snapshot?.floorplan_width || 1920)
@@ -152,16 +129,12 @@ export default function HeatmapOverlay({
         preserveAspectRatio="none"
         style={{ position: "absolute", top: 0, left: 0, pointerEvents: "auto" }}
       >
-        {snapshot?.seats?.map((item, i) => {
-          const labelKey = item?.id ?? `idx-${i}`;
-          const displayLabel = displayLabelMap.get(labelKey)
-            || (isEntrance(item) ? "Entrance" : "Seat");
-          
+        {snapshot?.seats?.map((item) => {
           // 👉 2. RENDER ENTRANCES (Cosmetic Only)
           if (isEntrance(item)) {
             const isHorizontal = item.width >= item.height;
-            const barW = 12; 
-            const lineT = 6;
+            const barW = 8; 
+            const lineT = 4;
             
             return (
               <g key={item.id} opacity={0.85}>
@@ -178,9 +151,6 @@ export default function HeatmapOverlay({
                     <rect x={item.x + (item.width/2) - (lineT/2)} y={item.y} width={lineT} height={item.height} fill="#333" />
                   </>
                 )}
-                <text x={item.x + item.width / 2} y={item.y - 12} fontSize="20" fontWeight="bold" textAnchor="middle" fill="#333">
-                  {displayLabel}
-                </text>
               </g>
             );
           }
@@ -234,21 +204,6 @@ export default function HeatmapOverlay({
                   strokeWidth="3"
                 />
               )}
-
-              {/* Label centered inside the shape */}
-              <text
-                x={cx}
-                y={cy}
-                fontSize="22"
-                fontWeight="bold"
-                fill="rgba(255,255,255,0.9)"
-                stroke="rgba(0,0,0,0.5)"
-                strokeWidth="0.5"
-                textAnchor="middle"          // Centers text horizontally
-                alignmentBaseline="middle"   // Centers text vertically
-              >
-                {displayLabel}
-              </text>
             </g>
           );
         })}

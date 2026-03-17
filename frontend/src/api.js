@@ -148,7 +148,7 @@ export async function uploadFloorplan(file) {
  * @param {number} imageWidth - Original image width
  * @param {number} imageHeight - Original image height
  */
-export async function submitFloorplanWithSeats(imageFile, seats, streamUrl, streamName, imageWidth, imageHeight) {
+export async function submitFloorplanWithSeats(imageFile, seats, streamUrl, streamName, imageWidth, imageHeight, floorplanId = null, floorName = null) {
   const formData = new FormData();
   formData.append("floorplan", imageFile);
   formData.append("seats", JSON.stringify(seats));
@@ -156,6 +156,12 @@ export async function submitFloorplanWithSeats(imageFile, seats, streamUrl, stre
   formData.append("stream_name", streamName);
   formData.append("image_width", imageWidth);
   formData.append("image_height", imageHeight);
+  if (floorplanId) {
+    formData.append("floorplan_id", floorplanId);
+  }
+  if (floorName) {
+    formData.append("floor_name", floorName);
+  }
 
   const res = await fetch(`${BASE_URL}/submit-floorplan`, {
     method: "POST",
@@ -198,6 +204,33 @@ export async function getdata(streamId) {
   return res.json();
 }
 
+/**
+ * Get latest aggregated occupancy snapshot for a floorplan
+ * @param {string} floorplanId - The floorplan ID
+ */
+export async function getFloorplanLatest(floorplanId) {
+  const res = await fetch(`${BASE_URL}/floorplans/${floorplanId}/latest`);
+  if (!res.ok) throw new Error("Get floorplan data failed");
+  return res.json();
+}
+
+/**
+ * Auto-generate floorplan shapes from an uploaded image
+ * @param {File} imageFile - Floorplan image file
+ */
+export async function autoGenerateFloorplan(imageFile, trackingMode = "tables") {
+  const formData = new FormData();
+  formData.append("floorplan", imageFile);
+  formData.append("trackingMode", trackingMode);
+
+  const res = await fetch(`${BASE_URL}/api/auto-generate-floorplan`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) throw new Error("Auto-generate failed");
+  return res.json();
+}
+
 const apiExports = {
   ping,
   getServerStatus,
@@ -213,6 +246,8 @@ const apiExports = {
   getFloorplans,
   getFloorplan,
   getdata,
+  getFloorplanLatest,
+  autoGenerateFloorplan,
 };
 
 export default apiExports;
