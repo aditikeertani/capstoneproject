@@ -485,7 +485,7 @@ export default function FeedSelection() {
                     >
                       <div>
                         <div style={{ fontSize: 11, color: "#666" }}>
-                          Floorplan: ({seat.x}, {seat.y})
+                          Seat ID: {seat.id}
                         </div>
                       </div>
                       <span style={{
@@ -514,9 +514,7 @@ export default function FeedSelection() {
                   <strong>Selected seat</strong>
                   {seats.find(s => s.id === selectedSeatId) && (
                     <div style={{ marginTop: 4, fontSize: 12, color: "#555" }}>
-                      Floorplan: (
-                      {seats.find(s => s.id === selectedSeatId)?.x},{" "}
-                      {seats.find(s => s.id === selectedSeatId)?.y})
+                      Seat ID: {selectedSeatId}
                     </div>
                   )}
                   <div style={{ marginTop: 5 }}>
