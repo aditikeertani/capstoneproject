@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useRef } from "react";
-import h337 from './heatmap.js';
 
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
@@ -66,8 +65,6 @@ export default function HeatmapOverlay({
   imageSrc = null,          
   showLegend = true,
 }) {
-  const containerRef = useRef(null);
-  const heatmapRef = useRef(null);
   const useFloorplan = !!snapshot?.floorplan;
 
   const sourceW = useFloorplan
@@ -81,32 +78,6 @@ export default function HeatmapOverlay({
   const displayW = Math.round(sourceW * scale);
   const displayH = Math.round(sourceH * scale);
 
-  const points = useMemo(
-    () => seatsToHeatmapPoints(snapshot, displayW, displayH, useFloorplan),
-    [snapshot, displayW, displayH, useFloorplan]
-  );
-
-  useEffect(() => {
-    if (!containerRef.current) return;
-    const existing = containerRef.current.querySelector('.heatmap-canvas');
-    if (existing) existing.remove();
-
-    heatmapRef.current = h337.create({
-      container: containerRef.current,
-      radius: Math.round(50 * scale), // Slightly larger radius for visual blending
-      maxOpacity: 0.55,
-      blur: 0.85,
-      width: displayW,
-      height: displayH,
-    });
-
-    return () => { heatmapRef.current = null; };
-  }, [displayW, displayH, scale]);
-
-  useEffect(() => {
-    if (!heatmapRef.current) return;
-    heatmapRef.current.setData({ max: 1, data: points });
-  }, [points]);
 
   return (
     <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
@@ -122,9 +93,6 @@ export default function HeatmapOverlay({
           {snapshot ? "No frame available" : "Waiting for data…"}
         </div>
       )}
-
-      {/* The cloudy heatmap layer */}
-      <div ref={containerRef} style={{ position: "absolute", top: 0, left: 0, width: displayW, height: displayH }} />
 
       {/* The precise Shapes layer */}
       <svg
