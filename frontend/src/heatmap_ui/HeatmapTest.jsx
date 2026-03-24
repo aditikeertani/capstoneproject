@@ -1,10 +1,10 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import HeatmapOverlay from "./HeatmapOverlay";
-import { getFloorplanLatest, getStreams } from "../api";
+import { getFloorplanLatest, getFloorplans } from "../api";
 
 const POLL_INTERVAL_MS = 5000; // refresh every 5 seconds
 
-export default function HeatmapTest() {
+export default function HeatmapTest({ onBack }) {
   const [snapshot, setSnapshot] = useState(null);
   const [floorplans, setFloorplans] = useState([]);
   const [selectedFloorplanId, setSelectedFloorplanId] = useState("");
@@ -29,38 +29,28 @@ export default function HeatmapTest() {
     if (embed) setIsEmbed(true);
   }, []);
 
-  // Load available floorplans on mount (derived from streams)
+  // Load available floorplans on mount
   useEffect(() => {
     (async () => {
       try {
-        const data = await getStreams();
-        const list = data.streams || [];
-
-        const grouped = new Map();
-        list.forEach((stream) => {
-          const floorplanId = stream.floorplan_id;
-          if (!floorplanId) return;
-          const floorName = stream.floor_name || "";
-          if (!grouped.has(floorplanId)) {
-            grouped.set(floorplanId, {
-              id: floorplanId,
-              label: floorName ? floorName : `Floorplan ${floorplanId}`,
-              streamCount: 0,
-            });
-          }
-          const entry = grouped.get(floorplanId);
-          entry.streamCount += 1;
-          if (floorName && entry.label && entry.label.startsWith("Floorplan ")) {
-            entry.label = floorName;
-          }
+        const data = await getFloorplans();
+        const list = data.floorplans || [];
+        const floorplanList = list.map((fp) => {
+          const id = fp.id || fp._id;
+          const label =
+            fp.floor_name ||
+            fp.floorName ||
+            fp.filename ||
+            (id ? `Floorplan ${id}` : "Floorplan");
+          const streamCount = Array.isArray(fp.stream_ids)
+            ? fp.stream_ids.length
+            : fp.stream_id
+            ? 1
+            : 0;
+          return { id, label, streamCount };
         });
-
-        const floorplanList = Array.from(grouped.values());
         setFloorplans(floorplanList);
-        const hasInitial = initialFloorplanId
-          ? floorplanList.some((fp) => fp.id === initialFloorplanId)
-          : false;
-        if (hasInitial) {
+        if (initialFloorplanId) {
           setSelectedFloorplanId(initialFloorplanId);
         } else if (floorplanList.length > 0 && !selectedFloorplanId) {
           setSelectedFloorplanId(floorplanList[0].id);
@@ -96,6 +86,12 @@ export default function HeatmapTest() {
     const timer = setInterval(fetchSnapshot, POLL_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [autoRefresh, selectedFloorplanId, fetchSnapshot]);
+
+  // Load immediately when floorplan changes
+  useEffect(() => {
+    if (!selectedFloorplanId) return;
+    fetchSnapshot();
+  }, [selectedFloorplanId, fetchSnapshot]);
 
   // Prefer the uploaded floorplan over any live camera frame
   const floorplanSrc = snapshot?.floorplan
@@ -159,6 +155,21 @@ export default function HeatmapTest() {
             marginBottom: 16,
             flexWrap: "wrap",
           }}>
+            {onBack && (
+              <button
+                onClick={onBack}
+                style={{
+                  padding: "8px 12px",
+                  backgroundColor: "#f1f3f5",
+                  color: "#333",
+                  border: "1px solid #ddd",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                }}
+              >
+                ← Back to Dashboard
+              </button>
+            )}
             <select
               value={selectedFloorplanId}
               onChange={(e) => {
@@ -167,10 +178,10 @@ export default function HeatmapTest() {
               }}
               style={{ padding: 8, borderRadius: 4, border: "1px solid #ddd" }}
             >
-              <option value="">Select a floorplan...</option>
+              <option value="">Select Floorplan / Heatmap...</option>
               {floorplans.map((fp) => (
                 <option key={fp.id} value={fp.id}>
-                  {fp.label} ({fp.streamCount} cameras)
+                  {fp.label}{fp.streamCount ? ` (${fp.streamCount} cameras)` : ""}
                 </option>
               ))}
             </select>

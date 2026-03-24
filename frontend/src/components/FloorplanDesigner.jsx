@@ -8,6 +8,7 @@ export default function FloorplanDesigner({
   setFloorplanDrafts,
   savedFloorplans = [],
   setSavedFloorplans,
+  setupKey = 0,
 }) {
   const [selectedFloorId, setSelectedFloorId] = useState("");
   const [selectedStreamId, setSelectedStreamId] = useState("");
@@ -822,6 +823,9 @@ export default function FloorplanDesigner({
         const results = await Promise.allSettled(
           streamsToSubmit.map(async (stream) => {
             const streamName = stream?.name || stream?.id || "Unnamed Stream";
+            const floorplanIdForSubmit = selectedFloorId
+              ? `${selectedFloorId}_${setupKey}`
+              : null;
             const result = await submitFloorplanWithSeats(
               imageFile,
               submitShapes,
@@ -829,7 +833,7 @@ export default function FloorplanDesigner({
               streamName,
               canvasRef.current.width,
               canvasRef.current.height,
-              selectedFloorId,
+              floorplanIdForSubmit,
               selectedFloor?.name || ""
             );
             return { result, stream, streamName };

@@ -9,7 +9,7 @@ import time
 import cv2
 import base64
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import defaultdict
 import uuid
 import math
@@ -19,6 +19,9 @@ from torchvision.transforms import ToTensor, Resize, Compose
 from model import Classifier  
 from pathlib import Path
 from torchvision import transforms
+from werkzeug.security import generate_password_hash, check_password_hash
+import jwt
+import re
 # Import capture module
 from capture import capture_frame_from_stream, save_screenshot, process_stream
 import av
@@ -63,6 +66,61 @@ def init_mongo(flask_app):
     return None, False
 
 mongo, MONGO_AVAILABLE = init_mongo(app)
+
+# Auth configuration
+JWT_ISSUER = "occupancy-app"
+JWT_EXPIRES_MINUTES = int(os.environ.get("JWT_EXPIRES_MINUTES", "10080"))  # 7 days default
+
+def get_jwt_secret():
+    secret = os.environ.get("JWT_SECRET")
+    if not secret:
+        secret = "dev-secret-change"
+        print("⚠️ JWT_SECRET not set. Using a dev-only default secret.")
+    return secret
+
+def create_jwt(user_id, email, name=None):
+    now = datetime.utcnow()
+    payload = {
+        "sub": str(user_id),
+        "email": email,
+        "name": name or "",
+        "iss": JWT_ISSUER,
+        "iat": now,
+        "exp": now + timedelta(minutes=JWT_EXPIRES_MINUTES),
+    }
+    token = jwt.encode(payload, get_jwt_secret(), algorithm="HS256")
+    if isinstance(token, bytes):
+        token = token.decode("utf-8")
+    return token
+
+def decode_jwt(token):
+    return jwt.decode(
+        token,
+        get_jwt_secret(),
+        algorithms=["HS256"],
+        issuer=JWT_ISSUER,
+    )
+
+def normalize_email(value):
+    return (value or "").strip().lower()
+
+def is_valid_email(value):
+    if not value:
+        return False
+    return re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", value) is not None
+
+def require_auth():
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return None, jsonify({"error": "Missing token"}), 401
+    token = auth_header.split(" ", 1)[1].strip()
+    try:
+        payload = decode_jwt(token)
+        return payload, None, None
+    except jwt.ExpiredSignatureError:
+        return None, jsonify({"error": "Token expired"}), 401
+    except jwt.InvalidTokenError:
+        return None, jsonify({"error": "Invalid token"}), 401
 
 # Configuration
 SCREENSHOT_INTERVAL = 30  # seconds between screenshots
@@ -319,9 +377,100 @@ def health_check():
         "models_directory": MODELS_DIR
     })
 
+@app.route("/auth/register", methods=["POST"])
+def register_account():
+    if not MONGO_AVAILABLE or not mongo:
+        return jsonify({"error": "MongoDB not available"}), 503
+
+    data = request.get_json(silent=True) or {}
+    email = normalize_email(data.get("email"))
+    password = data.get("password") or ""
+    name = (data.get("name") or "").strip()
+
+    if not is_valid_email(email):
+        return jsonify({"error": "Valid email is required"}), 400
+    if len(password) < 6:
+        return jsonify({"error": "Password must be at least 6 characters"}), 400
+
+    try:
+        existing = mongo.db.users.find_one({"email": email})
+        if existing:
+            return jsonify({"error": "Email already registered"}), 409
+
+        password_hash = generate_password_hash(password)
+        user_doc = {
+            "email": email,
+            "password_hash": password_hash,
+            "name": name,
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        result = mongo.db.users.insert_one(user_doc)
+        user_id = str(result.inserted_id)
+        token = create_jwt(user_id, email, name)
+
+        return jsonify({
+            "token": token,
+            "user": {"id": user_id, "email": email, "name": name},
+        })
+    except MONGO_FAILFAST_EXCEPTIONS as e:
+        disable_mongo(e)
+        return jsonify({"error": "MongoDB not available"}), 503
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/auth/login", methods=["POST"])
+def login_account():
+    if not MONGO_AVAILABLE or not mongo:
+        return jsonify({"error": "MongoDB not available"}), 503
+
+    data = request.get_json(silent=True) or {}
+    email = normalize_email(data.get("email"))
+    password = data.get("password") or ""
+
+    if not is_valid_email(email) or not password:
+        return jsonify({"error": "Email and password are required"}), 400
+
+    try:
+        user = mongo.db.users.find_one({"email": email})
+        if not user or not check_password_hash(user.get("password_hash", ""), password):
+            return jsonify({"error": "Invalid email or password"}), 401
+
+        user_id = str(user.get("_id"))
+        name = user.get("name", "")
+        token = create_jwt(user_id, email, name)
+
+        return jsonify({
+            "token": token,
+            "user": {"id": user_id, "email": email, "name": name},
+        })
+    except MONGO_FAILFAST_EXCEPTIONS as e:
+        disable_mongo(e)
+        return jsonify({"error": "MongoDB not available"}), 503
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/auth/me", methods=["GET"])
+def auth_me():
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return jsonify({"error": "Missing token"}), 401
+    token = auth_header.split(" ", 1)[1].strip()
+    try:
+        payload = decode_jwt(token)
+        return jsonify({"user": payload})
+    except jwt.ExpiredSignatureError:
+        return jsonify({"error": "Token expired"}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({"error": "Invalid token"}), 401
+
 @app.route("/upload-floorplan", methods=["POST"])
 def upload_floorplan():
     """Upload a floorplan image and store in MongoDB."""
+    user, resp, status = require_auth()
+    if resp:
+        return resp, status
+    user_id = user.get("sub")
+
     if "floorplan" not in request.files:
         return jsonify({"error": "No floorplan uploaded"}), 400
 
@@ -353,7 +502,8 @@ def upload_floorplan():
                 "size_bytes": len(file_content),
                 "image_data": base64.b64encode(file_content).decode('utf-8'),
                 "uploaded_at": datetime.now().isoformat(),
-                "coordinates": []  # Will be populated when user maps seats
+                "coordinates": [],  # Will be populated when user maps seats
+                "created_by": user_id,
             }
             
             mongo.db.floorplans.insert_one(floorplan_doc)
@@ -376,6 +526,11 @@ def upload_floorplan():
 def submit_floorplan():
     """Submit a floorplan with seats and associate with a stream."""
     import json
+
+    user, resp, status = require_auth()
+    if resp:
+        return resp, status
+    user_id = user.get("sub")
     
     if "floorplan" not in request.files:
         return jsonify({"error": "No floorplan image uploaded"}), 400
@@ -426,6 +581,11 @@ def submit_floorplan():
     # Store in MongoDB if available
     if MONGO_AVAILABLE and mongo:
         try:
+            if provided_floorplan_id:
+                existing = mongo.db.floorplans.find_one({"_id": floorplan_id})
+                if existing and existing.get("created_by") and existing.get("created_by") != user_id:
+                    return jsonify({"error": "Not authorized for this floorplan"}), 403
+
             with open(filepath, 'rb') as f:
                 file_content = f.read()
             
@@ -440,6 +600,7 @@ def submit_floorplan():
                 "image_width": image_width,
                 "image_height": image_height,
                 "uploaded_at": datetime.now().isoformat(),
+                "created_by": user_id,
                 # Keep last stream details for backward compatibility
                 "stream_id": stream_id,
                 "stream_url": stream_url,
@@ -457,7 +618,7 @@ def submit_floorplan():
             )
             
             # Store stream config
-            stream_doc = {**stream_info, "_id": stream_id}
+            stream_doc = {**stream_info, "_id": stream_id, "created_by": user_id}
             mongo.db.streams.update_one(
                 {"_id": stream_id},
                 {"$set": stream_doc},
@@ -497,6 +658,9 @@ def submit_floorplan():
 @app.route('/streams/<stream_id>/seat-mappings', methods=['POST'])
 @app.route('/streams/<stream_id>/seat-mappings', methods=['POST'])
 def save_seat_mappings(stream_id):
+    user, resp, status = require_auth()
+    if resp:
+        return resp, status
     try:
         data = request.json
         
@@ -559,11 +723,21 @@ def save_seat_mappings(stream_id):
 @app.route("/floorplans", methods=["GET"])
 def get_floorplans():
     """Get all uploaded floorplans."""
+    user, resp, status = require_auth()
+    if resp:
+        return resp, status
+    user_id = user.get("sub")
+
     if not MONGO_AVAILABLE or not mongo:
         return jsonify({"error": "MongoDB not available", "floorplans": []}), 200
     
     try:
-        floorplans = list(mongo.db.floorplans.find({}, {"image_data": 0}))  # Exclude image data for list
+        floorplans = list(
+            mongo.db.floorplans.find(
+                {"created_by": user_id},
+                {"image_data": 0}
+            )
+        )  # Exclude image data for list
         # Convert ObjectId to string if needed
         for fp in floorplans:
             fp["id"] = str(fp.pop("_id"))
@@ -577,11 +751,16 @@ def get_floorplans():
 @app.route("/floorplans/<floorplan_id>", methods=["GET"])
 def get_floorplan(floorplan_id):
     """Get a specific floorplan by ID."""
+    user, resp, status = require_auth()
+    if resp:
+        return resp, status
+    user_id = user.get("sub")
+
     if not MONGO_AVAILABLE or not mongo:
         return jsonify({"error": "MongoDB not available"}), 503
     
     try:
-        floorplan = mongo.db.floorplans.find_one({"_id": floorplan_id})
+        floorplan = mongo.db.floorplans.find_one({"_id": floorplan_id, "created_by": user_id})
         if not floorplan:
             return jsonify({"error": "Floorplan not found"}), 404
         floorplan["id"] = str(floorplan.pop("_id"))
@@ -981,6 +1160,27 @@ def get_stream_latest(stream_id):
 @app.route("/floorplans/<floorplan_id>/latest", methods=["GET"])
 def get_floorplan_latest(floorplan_id):
     """Get the latest aggregated occupancy snapshot for a floorplan."""
+    user, resp, status = require_auth()
+    if resp:
+        return resp, status
+    user_id = user.get("sub")
+
+    if not MONGO_AVAILABLE or not mongo:
+        return jsonify({"error": "MongoDB not available"}), 503
+
+    try:
+        floorplan_doc = mongo.db.floorplans.find_one(
+            {"_id": floorplan_id, "created_by": user_id},
+            {"image_data": 0}
+        )
+        if not floorplan_doc:
+            return jsonify({"error": "Floorplan not found"}), 404
+    except MONGO_FAILFAST_EXCEPTIONS as e:
+        disable_mongo(e)
+        return jsonify({"error": "MongoDB not available"}), 503
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
     # Collect streams tied to this floorplan
     streams_for_floor = [
         s for s in active_streams.values()

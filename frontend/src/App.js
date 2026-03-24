@@ -3,11 +3,18 @@ import { getFloorplans } from "./api";
 import SetupStep from "./components/SetupStep";
 import FloorplanDesigner from "./components/FloorplanDesigner";
 import FeedSelection from "./components/FeedSelection";
+import LoginPage from "./components/LoginPage";
+import Dashboard from "./components/Dashboard";
 import HeatmapTest from "./heatmap_ui/HeatmapTest";
 
 export default function App() {
-  const [currentStep, setCurrentStep] = useState(1);
+  const [currentStep, setCurrentStep] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
+  const [setupKey, setSetupKey] = useState(0);
+  const [isAuthenticated, setIsAuthenticated] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return Boolean(localStorage.getItem("auth_jwt"));
+  });
 
   const [floors, setFloors] = useState([]);
   const [streams, setStreams] = useState([]);
@@ -47,8 +54,8 @@ export default function App() {
     const checkSavedData = async () => {
       try {
         await getFloorplans();
-        // Always start at Step 1 on first load
-        setCurrentStep(1);
+        // Always start at Dashboard on first load
+        setCurrentStep(0);
       } catch (error) {
         console.error("Backend not reachable or no floorplans found.", error);
       } finally {
@@ -62,6 +69,24 @@ export default function App() {
   const nextStep = () => setCurrentStep((prev) => prev + 1);
   const prevStep = () => setCurrentStep((prev) => prev - 1);
   const goToStep = (stepNumber) => setCurrentStep(stepNumber);
+  const resetSetupState = () => {
+    setSetupKey((prev) => prev + 1);
+    setFloors([]);
+    setStreams([]);
+    setFloorplanDrafts({});
+  };
+  const startNewSetup = () => {
+    resetSetupState();
+    setCurrentStep(1);
+  };
+  const handleLogin = () => {
+    setIsAuthenticated(true);
+    setCurrentStep(0);
+  };
+
+  if (!isAuthenticated) {
+    return <LoginPage onLogin={handleLogin} />;
+  }
 
   if (isLoading) {
     return <div style={{ padding: 40, fontSize: "18px" }}>Loading your workspace...</div>;
@@ -73,8 +98,16 @@ export default function App() {
 
       {/* Show a progress indicator */}
       <div style={{ marginBottom: 20, color: "gray", fontWeight: "bold" }}>
-        Step {currentStep} of 4
+        {currentStep === 0 ? "Dashboard" : `Step ${currentStep} of 4`}
       </div>
+
+      {/* Step 0: Dashboard */}
+      {currentStep === 0 && (
+        <Dashboard
+          onCreate={startNewSetup}
+          onView={() => goToStep(4)}
+        />
+      )}
 
       {/* Step 1: Configuration / Setup */}
       {currentStep === 1 && (
@@ -85,6 +118,7 @@ export default function App() {
           </p>
 
           <SetupStep
+            key={`setup-${setupKey}`}
             floors={floors}
             setFloors={setFloors}
             streams={streams}
@@ -140,12 +174,14 @@ export default function App() {
           </p>
 
           <FloorplanDesigner
+            key={`designer-${setupKey}`}
             floors={floors}
             streams={streams}
             floorplanDrafts={floorplanDrafts}
             setFloorplanDrafts={setFloorplanDrafts}
             savedFloorplans={savedFloorplans}
             setSavedFloorplans={setSavedFloorplans}
+            setupKey={setupKey}
           />
 
           <div style={{ marginTop: 20 }}>
@@ -190,7 +226,7 @@ export default function App() {
             Highlight where the tables from your floorplan appear in the camera feed.
           </p>
 
-          <FeedSelection />
+          <FeedSelection key={`mapping-${setupKey}`} />
 
           <div style={{ marginTop: 20 }}>
             <button
@@ -240,7 +276,10 @@ export default function App() {
           >
             <h2 style={{ margin: 0 }}>Step 4: Live Occupancy Heatmap</h2>
             <button
-              onClick={() => goToStep(1)}
+              onClick={() => {
+                resetSetupState();
+                goToStep(0);
+              }}
               style={{
                 padding: "8px 16px",
                 backgroundColor: "#dc3545",
@@ -265,7 +304,7 @@ export default function App() {
               alignItems: "stretch",
             }}
           >
-            <HeatmapTest />
+            <HeatmapTest onBack={() => goToStep(0)} />
           </div>
         </div>
       )}

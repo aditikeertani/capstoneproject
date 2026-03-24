@@ -1,8 +1,52 @@
 const BASE_URL = "http://127.0.0.1:5001";
 
+const getAuthToken = () => {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem("auth_jwt");
+};
+
+const authHeaders = () => {
+  const token = getAuthToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+};
+
 export async function ping() {
   const res = await fetch(`${BASE_URL}/`);
   if (!res.ok) throw new Error("Ping failed");
+  return res.json();
+}
+
+async function parseError(res, fallback) {
+  try {
+    const data = await res.json();
+    if (data?.error) return data.error;
+  } catch {}
+  return fallback;
+}
+
+export async function authRegister(email, password, name = "") {
+  const res = await fetch(`${BASE_URL}/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password, name }),
+  });
+  if (!res.ok) {
+    const message = await parseError(res, "Failed to create account");
+    throw new Error(message);
+  }
+  return res.json();
+}
+
+export async function authLogin(email, password) {
+  const res = await fetch(`${BASE_URL}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!res.ok) {
+    const message = await parseError(res, "Failed to sign in");
+    throw new Error(message);
+  }
   return res.json();
 }
 
@@ -114,7 +158,7 @@ export async function getFrameFromUrl(url) {
 export async function saveSeatMappings(streamId, mappings) {
   const res = await fetch(`${BASE_URL}/streams/${streamId}/seat-mappings`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ mappings }),
   });
   if (!res.ok) throw new Error("Failed to save seat mappings");
@@ -132,6 +176,7 @@ export async function uploadFloorplan(file) {
 
   const res = await fetch(`${BASE_URL}/upload-floorplan`, {
     method: "POST",
+    headers: { ...authHeaders() },
     body: formData,
   });
   if (!res.ok) throw new Error("Upload failed");
@@ -165,6 +210,7 @@ export async function submitFloorplanWithSeats(imageFile, seats, streamUrl, stre
 
   const res = await fetch(`${BASE_URL}/submit-floorplan`, {
     method: "POST",
+    headers: { ...authHeaders() },
     body: formData,
   });
   if (!res.ok) throw new Error("Failed to submit floorplan");
@@ -180,7 +226,9 @@ export const assignStream = addStream;
  * Get all uploaded floorplans from MongoDB
  */
 export async function getFloorplans() {
-  const res = await fetch(`${BASE_URL}/floorplans`);
+  const res = await fetch(`${BASE_URL}/floorplans`, {
+    headers: { ...authHeaders() },
+  });
   if (!res.ok) throw new Error("Failed to get floorplans");
   return res.json();
 }
@@ -189,7 +237,9 @@ export async function getFloorplans() {
  * Get a specific floorplan by ID (includes image data)
  */
 export async function getFloorplan(floorplanId) {
-  const res = await fetch(`${BASE_URL}/floorplans/${floorplanId}`);
+  const res = await fetch(`${BASE_URL}/floorplans/${floorplanId}`, {
+    headers: { ...authHeaders() },
+  });
   if (!res.ok) throw new Error("Failed to get floorplan");
   return res.json();
 }
@@ -209,7 +259,9 @@ export async function getdata(streamId) {
  * @param {string} floorplanId - The floorplan ID
  */
 export async function getFloorplanLatest(floorplanId) {
-  const res = await fetch(`${BASE_URL}/floorplans/${floorplanId}/latest`);
+  const res = await fetch(`${BASE_URL}/floorplans/${floorplanId}/latest`, {
+    headers: { ...authHeaders() },
+  });
   if (!res.ok) throw new Error("Get floorplan data failed");
   return res.json();
 }
@@ -225,6 +277,7 @@ export async function autoGenerateFloorplan(imageFile, trackingMode = "tables") 
 
   const res = await fetch(`${BASE_URL}/api/auto-generate-floorplan`, {
     method: "POST",
+    headers: { ...authHeaders() },
     body: formData,
   });
   if (!res.ok) throw new Error("Auto-generate failed");
@@ -234,6 +287,8 @@ export async function autoGenerateFloorplan(imageFile, trackingMode = "tables") 
 const apiExports = {
   ping,
   getServerStatus,
+  authRegister,
+  authLogin,
   getStreams,
   getOccupancy,
   getStreamOccupancy,
