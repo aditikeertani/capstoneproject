@@ -292,14 +292,14 @@ export default function HeatmapTest() {
           ref={containerRef}
           style={{
             width: "100%",
-            height: isEmbed ? "100vh" : "auto",
-            minHeight: isEmbed ? "100vh" : 540,
+            height: isEmbed ? "100vh" : "70vh",
+            minHeight: isEmbed ? "100vh" : 420,
           }}
         >
           <HeatmapOverlay
             snapshot={snapshot}
-            width={isEmbed ? containerSize.width : 960}
-            height={isEmbed ? containerSize.height : 540}
+            width={Math.max(1, containerSize.width || 960)}
+            height={Math.max(1, containerSize.height || 540)}
             imageSrc={imageSrc}
           />
         </div>

@@ -256,11 +256,13 @@ export default function App() {
 
           <div
             style={{
-              padding: 60,
+              padding: 16,
               border: "2px dashed #ccc",
               borderRadius: 8,
-              textAlign: "center",
               backgroundColor: "#f8f9fa",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "stretch",
             }}
           >
             <HeatmapTest />

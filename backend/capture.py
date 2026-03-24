@@ -27,6 +27,43 @@ def is_entrance(coord):
         return True
     return False
 
+def build_offline_seat_result(coord):
+    seat_id = coord.get("id", "unknown")
+    return {
+        "id": seat_id,
+        # Floorplan coordinates
+        "x": coord.get("x", 0),
+        "y": coord.get("y", 0),
+        "width": coord.get("width", 0),
+        "height": coord.get("height", 0),
+        # Camera coordinates (if available)
+        "camera_x": coord.get("camera_x"),
+        "camera_y": coord.get("camera_y"),
+        "camera_width": coord.get("camera_width"),
+        "camera_height": coord.get("camera_height"),
+        # Seat info
+        "label": coord.get("label", "Unknown"),
+        # Offline status
+        "status": -1,
+        "status_name": "Offline",
+        "confidence": 0,
+        "is_occupied": False,
+    }
+
+def mark_stream_offline(stream_id, active_streams, occupancy_data, coordinates, reason=None):
+    stream_info = active_streams.get(stream_id, {})
+    current_coords = stream_info.get("coordinates", coordinates) or []
+    stream_data = occupancy_data.setdefault(stream_id, {})
+
+    for coord in current_coords:
+        if is_entrance(coord):
+            continue
+        seat_id = coord.get("id", "unknown")
+        stream_data[seat_id] = build_offline_seat_result(coord)
+
+    if reason:
+        print(f"Stream {stream_id} offline: {reason}")
+
 def capture_frame_from_stream(stream_url):
     if stream_url is None:
         return None
@@ -83,8 +120,16 @@ def process_stream(stream_id, stream_url, active_streams, occupancy_data,
     while stream_id in active_streams and active_streams[stream_id].get('active', False):
         try:
             frame = capture_frame_from_stream(stream_url)
-            
-            if frame is not None:
+
+            if frame is None:
+                mark_stream_offline(
+                    stream_id,
+                    active_streams,
+                    occupancy_data,
+                    coordinates,
+                    reason="no_frame",
+                )
+            else:
                 # Save screenshot
                 screenshot_path = save_screenshot(frame, stream_id, screenshots_dir)
                 
@@ -157,10 +202,14 @@ def process_stream(stream_id, stream_url, active_streams, occupancy_data,
                         # Seat info
                         "label": coord.get("label", "Unknown"),
                         # Prediction result
-                        "status": prediction["class_index"],
-                        "status_name": prediction["class_name"],
-                        "confidence": prediction["confidence"]
+                        "status": prediction.get("class_index", -1),
+                        "status_name": prediction.get("class_name", "Offline"),
+                        "confidence": prediction.get("confidence", 0),
+                        "is_occupied": bool(prediction.get("is_occupied", False)),
                     }
+                    if seat_result["status"] == -1:
+                        seat_result["confidence"] = 0
+                        seat_result["is_occupied"] = False
                     occupancy_data[stream_id][seat_id] = seat_result
                     seats_data.append(seat_result)
                 
@@ -168,10 +217,15 @@ def process_stream(stream_id, stream_url, active_streams, occupancy_data,
                 # This avoids storing large amounts of historical data
                 
                 print(f"Occupancy updated for {stream_id}: {len(seats_data)} seats processed")
-            else:
-                print(f"No frame captured for {stream_id}")
         except Exception as e:
             print(f"Error processing stream {stream_id}: {e}")
+            mark_stream_offline(
+                stream_id,
+                active_streams,
+                occupancy_data,
+                coordinates,
+                reason=f"error: {e}",
+            )
         
         time.sleep(screenshot_interval)
     

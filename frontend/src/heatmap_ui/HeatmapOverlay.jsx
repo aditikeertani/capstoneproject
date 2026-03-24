@@ -25,7 +25,11 @@ function seatsToHeatmapPoints(snapshot, displayW, displayH, useFloorplan) {
 
   return snapshot.seats
     // 👉 1. STRICT FILTER: Ignore anything that is an entrance
-    .filter(s => Number(s.status) === 1 && !isEntrance(s))
+    .filter(s => {
+      const status = Number(s.status);
+      if (status === -1) return false; // Explicitly exclude offline seats from glow
+      return status === 1 && !isEntrance(s);
+    })
     .map(s => {
       let nx, ny;
 
@@ -60,6 +64,7 @@ export default function HeatmapOverlay({
   width: maxWidth = 960,    
   height: maxHeight = 720,  
   imageSrc = null,          
+  showLegend = true,
 }) {
   const containerRef = useRef(null);
   const heatmapRef = useRef(null);
@@ -72,7 +77,7 @@ export default function HeatmapOverlay({
     ? (snapshot?.floorplan_height || 1080)
     : (snapshot?.frame_height || 1080);
 
-  const scale = Math.min(maxWidth / sourceW, maxHeight / sourceH, 1);
+  const scale = Math.min(maxWidth / sourceW, maxHeight / sourceH);
   const displayW = Math.round(sourceW * scale);
   const displayH = Math.round(sourceH * scale);
 
@@ -157,6 +162,7 @@ export default function HeatmapOverlay({
 
           // 👉 3. RENDER SEATS (Warped to exact floorplan shapes)
           const status = Number(item.status);
+          const isOffline = status === -1;
           const occupied = status === 1;
 
           // Determine dimensions based on whether we are looking at the floorplan or the camera feed
@@ -176,8 +182,12 @@ export default function HeatmapOverlay({
           const cx = renderX + renderW / 2;
           const cy = renderY + renderH / 2;
 
-          const fillColor = occupied ? "rgba(255, 60, 60, 0.45)" : "rgba(60, 255, 60, 0.25)";
-          const strokeColor = occupied ? "rgba(255, 60, 60, 0.9)" : "rgba(60, 255, 60, 0.7)";
+          const fillColor = isOffline
+            ? "rgba(0, 0, 0, 0.7)"
+            : (occupied ? "rgba(255, 60, 60, 0.45)" : "rgba(60, 255, 60, 0.25)");
+          const strokeColor = isOffline
+            ? "rgba(100, 100, 100, 0.9)"
+            : (occupied ? "rgba(255, 60, 60, 0.9)" : "rgba(60, 255, 60, 0.7)");
 
           return (
             <g key={item.id} opacity={1}>
@@ -209,47 +219,43 @@ export default function HeatmapOverlay({
         })}
       </svg>
     </div>
-    <div style={{
-      minWidth: 180,
-      padding: 10,
-      border: "1px solid #ddd",
-      borderRadius: 8,
-      backgroundColor: "#fafafa",
-      color: "#222",
-      fontSize: 12,
-    }}>
-      <div style={{ fontWeight: "bold", marginBottom: 8 }}>Legend</div>
+    {showLegend && (
+      <div style={{
+        minWidth: 180,
+        padding: 10,
+        border: "1px solid #ddd",
+        borderRadius: 8,
+        backgroundColor: "#fafafa",
+        color: "#222",
+        fontSize: 12,
+      }}>
+        <div style={{ fontWeight: "bold", marginBottom: 8 }}>Legend</div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-        <div style={{ width: 24, height: 24, backgroundColor: "rgba(60, 255, 60, 0.25)", border: "2px solid rgba(60, 255, 60, 0.7)" }} />
-        <div>Unoccupied seat</div>
-      </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+          <div style={{ width: 24, height: 24, backgroundColor: "rgba(60, 255, 60, 0.25)", border: "2px solid rgba(60, 255, 60, 0.7)" }} />
+          <div>Unoccupied seat</div>
+        </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-        <div style={{ width: 24, height: 24, backgroundColor: "rgba(255, 60, 60, 0.45)", border: "2px solid rgba(255, 60, 60, 0.9)" }} />
-        <div>Occupied seat</div>
-      </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+          <div style={{ width: 24, height: 24, backgroundColor: "rgba(255, 60, 60, 0.45)", border: "2px solid rgba(255, 60, 60, 0.9)" }} />
+          <div>Occupied seat</div>
+        </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-        <svg width="28" height="18" viewBox="0 0 28 18" aria-hidden="true">
-          <rect x="0" y="0" width="4" height="18" fill="#333" />
-          <rect x="24" y="0" width="4" height="18" fill="#333" />
-          <rect x="0" y="7" width="28" height="4" fill="#333" />
-        </svg>
-        <div>Entrance</div>
-      </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+          <div style={{ width: 24, height: 24, backgroundColor: "rgba(0, 0, 0, 0.7)", border: "2px solid rgba(100, 100, 100, 0.9)" }} />
+          <div>Camera offline</div>
+        </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <div style={{
-          width: 24,
-          height: 24,
-          borderRadius: "50%",
-          background: "radial-gradient(circle, rgba(255,80,80,0.65) 0%, rgba(255,80,80,0.15) 55%, rgba(255,80,80,0) 70%)",
-          border: "1px solid rgba(255,80,80,0.3)"
-        }} />
-        <div>Heat intensity</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+          <svg width="28" height="18" viewBox="0 0 28 18" aria-hidden="true">
+            <rect x="0" y="0" width="4" height="18" fill="#333" />
+            <rect x="24" y="0" width="4" height="18" fill="#333" />
+            <rect x="0" y="7" width="28" height="4" fill="#333" />
+          </svg>
+          <div>Entrance</div>
+        </div>
       </div>
-    </div>
+    )}
     </div>
   );
 }

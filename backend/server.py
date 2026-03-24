@@ -1,4 +1,5 @@
 from flask_pymongo import PyMongo
+from pymongo.errors import AutoReconnect, ConnectionFailure, ServerSelectionTimeoutError
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
@@ -30,13 +31,38 @@ app = Flask(__name__)
 # Only allow your specific React dev server to talk to the backend
 CORS(app, resources={r"/*": {"origins": "*"}})
 app.config["MONGO_URI"] = "mongodb://localhost:27017/myDatabase"
-try:
-    mongo = PyMongo(app)
-    MONGO_AVAILABLE = True
-except Exception as e:
-    print(f"MongoDB not available: {e}. Running without database.")
-    mongo = None
+MONGO_SERVER_SELECTION_TIMEOUT_MS = 2000
+MONGO_CONNECT_TIMEOUT_MS = 2000
+MONGO_FAILFAST_EXCEPTIONS = (
+    AutoReconnect,
+    ConnectionFailure,
+    ServerSelectionTimeoutError,
+)
+
+def disable_mongo(reason):
+    global MONGO_AVAILABLE, mongo
+    if MONGO_AVAILABLE or mongo is not None:
+        print(f"MongoDB disabled (fail-fast): {reason}. Falling back to memory.")
     MONGO_AVAILABLE = False
+    mongo = None
+
+def init_mongo(flask_app):
+    try:
+        mongo_client = PyMongo(
+            flask_app,
+            serverSelectionTimeoutMS=MONGO_SERVER_SELECTION_TIMEOUT_MS,
+            connectTimeoutMS=MONGO_CONNECT_TIMEOUT_MS,
+        )
+        # Force a quick server selection to fail fast if MongoDB is offline.
+        mongo_client.cx.admin.command("ping")
+        return mongo_client, True
+    except MONGO_FAILFAST_EXCEPTIONS as e:
+        print(f"MongoDB not available (fail-fast): {e}. Running without database.")
+    except Exception as e:
+        print(f"MongoDB initialization failed: {e}. Running without database.")
+    return None, False
+
+mongo, MONGO_AVAILABLE = init_mongo(app)
 
 # Configuration
 SCREENSHOT_INTERVAL = 30  # seconds between screenshots
@@ -84,6 +110,8 @@ def load_floorplan_asset(floorplan_id):
                 floorplan_width = fp_doc.get("image_width", 0)
                 floorplan_height = fp_doc.get("image_height", 0)
                 floorplan_seats = fp_doc.get("seats")
+        except MONGO_FAILFAST_EXCEPTIONS as e:
+            disable_mongo(e)
         except Exception as e:
             print(f"Failed to load floorplan from MongoDB: {e}")
 
@@ -331,6 +359,8 @@ def upload_floorplan():
             mongo.db.floorplans.insert_one(floorplan_doc)
             print(f"Floorplan {floorplan_id} stored in MongoDB")
             
+        except MONGO_FAILFAST_EXCEPTIONS as e:
+            disable_mongo(e)
         except Exception as e:
             print(f"Failed to store floorplan in MongoDB: {e}")
     
@@ -437,6 +467,8 @@ def submit_floorplan():
             print(f"Floorplan {floorplan_id} with {len(seats)} seats stored in MongoDB")
             print(f"Stream {stream_id} created and associated")
             
+        except MONGO_FAILFAST_EXCEPTIONS as e:
+            disable_mongo(e)
         except Exception as e:
             print(f"Failed to store in MongoDB: {e}")
     
@@ -503,13 +535,22 @@ def save_seat_mappings(stream_id):
                     }},
                     upsert=True
                 )
+            except MONGO_FAILFAST_EXCEPTIONS as e:
+                disable_mongo(e)
             except Exception as e:
                 print(f"MongoDB save failed, but memory updated: {e}")
+
+        mappings_count = 0
+        if isinstance(mappings, dict):
+            mappings_count = sum(1 for value in mappings.values() if value)
+        elif isinstance(mappings, list):
+            mappings_count = sum(1 for value in mappings if value)
 
         return jsonify({
             "status": "success", 
             "message": "Mappings saved locally",
-            "updated_seats": active_streams[stream_id].get('coordinates', [])
+            "updated_seats": active_streams[stream_id].get('coordinates', []),
+            "mappings_count": mappings_count,
         })
     except Exception as e:
         print(f"Critical Error: {e}")
@@ -527,6 +568,9 @@ def get_floorplans():
         for fp in floorplans:
             fp["id"] = str(fp.pop("_id"))
         return jsonify({"floorplans": floorplans, "count": len(floorplans)})
+    except MONGO_FAILFAST_EXCEPTIONS as e:
+        disable_mongo(e)
+        return jsonify({"error": "MongoDB not available", "floorplans": []}), 200
     except Exception as e:
         return jsonify({"error": str(e), "floorplans": []}), 500
 
@@ -542,6 +586,9 @@ def get_floorplan(floorplan_id):
             return jsonify({"error": "Floorplan not found"}), 404
         floorplan["id"] = str(floorplan.pop("_id"))
         return jsonify(floorplan)
+    except MONGO_FAILFAST_EXCEPTIONS as e:
+        disable_mongo(e)
+        return jsonify({"error": "MongoDB not available"}), 503
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -586,6 +633,8 @@ def add_stream():
                 upsert=True
             )
             print(f"✅ Stream {stream_id} stored in MongoDB")
+        except MONGO_FAILFAST_EXCEPTIONS as e:
+            disable_mongo(e)
         except Exception as e:
             print(f"⚠️ Failed to store stream in MongoDB: {e}")
     
@@ -857,6 +906,29 @@ def get_stream_latest(stream_id):
         def pick(primary, fallback):
             return primary if primary is not None else fallback
 
+        status = occ.get("status")
+        if status is None:
+            status = occ.get("class_index", 0)
+        try:
+            status = int(status)
+        except Exception:
+            status = 0
+
+        confidence = occ.get("confidence", 0)
+        if status == -1:
+            confidence = 0
+
+        status_name = occ.get("status_name")
+        if not status_name:
+            if status == 1:
+                status_name = "Occupied"
+            elif status == 0:
+                status_name = "Unoccupied"
+            elif status == -1:
+                status_name = "Offline"
+            else:
+                status_name = ""
+
         seats_list.append({
             "id": seat_id,
             "x": coord.get("x", 0),
@@ -869,9 +941,10 @@ def get_stream_latest(stream_id):
             "camera_y": pick(coord.get("camera_y"), occ.get("camera_y")),
             "camera_width": pick(coord.get("camera_width"), occ.get("camera_width")),
             "camera_height": pick(coord.get("camera_height"), occ.get("camera_height")),
-            "status": occ.get("status", 0),
-            "status_name": occ.get("status_name", ""),
-            "confidence": occ.get("confidence", 0),
+            "status": status,
+            "status_name": status_name,
+            "confidence": confidence,
+            "is_occupied": status == 1,
         })
 
     # Try to capture a live frame for the heatmap background
@@ -929,7 +1002,10 @@ def get_floorplan_latest(floorplan_id):
         seat_id = seat.get("id")
         if seat_id is None:
             continue
-        agg_status = 0
+
+        saw_occupied = False
+        saw_unoccupied = False
+        saw_offline = False
         agg_confidence = 0
         for stream_id in stream_ids:
             occ = occupancy_data.get(stream_id, {}).get(seat_id)
@@ -938,18 +1014,48 @@ def get_floorplan_latest(floorplan_id):
             occ_status = occ.get("status")
             if occ_status is None:
                 occ_status = occ.get("class_index")
+            try:
+                occ_status = int(occ_status)
+            except Exception:
+                continue
+
             if occ_status == 1:
-                agg_status = 1
+                saw_occupied = True
+            elif occ_status == 0:
+                saw_unoccupied = True
+            elif occ_status == -1:
+                saw_offline = True
             occ_conf = occ.get("confidence")
             try:
                 if occ_conf is not None:
                     agg_confidence = max(agg_confidence, float(occ_conf))
             except Exception:
                 pass
+
+        if saw_occupied:
+            agg_status = 1
+        elif saw_unoccupied:
+            agg_status = 0
+        elif saw_offline:
+            agg_status = -1
+        else:
+            agg_status = 0
+
+        if agg_status == -1:
+            agg_confidence = 0
+
+        if agg_status == 1:
+            status_name = "Occupied"
+        elif agg_status == 0:
+            status_name = "Unoccupied"
+        else:
+            status_name = "Offline"
+
         aggregated[seat_id] = {
             "status": agg_status,
-            "status_name": "Occupied" if agg_status == 1 else "Unoccupied",
+            "status_name": status_name,
             "confidence": agg_confidence,
+            "is_occupied": agg_status == 1,
         }
 
     seats_list = []
@@ -967,6 +1073,7 @@ def get_floorplan_latest(floorplan_id):
             "status": agg.get("status", 0),
             "status_name": agg.get("status_name", ""),
             "confidence": agg.get("confidence", 0),
+            "is_occupied": agg.get("is_occupied", agg.get("status", 0) == 1),
         })
 
     floorplan_base64, floorplan_width, floorplan_height, _ = load_floorplan_asset(floorplan_id)

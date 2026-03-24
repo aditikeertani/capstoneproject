@@ -37,6 +37,7 @@ export default function FloorplanDesigner({
   const [autoGenStatus, setAutoGenStatus] = useState(null);
   const [trackingMode, setTrackingMode] = useState("tables");
   const [zoom, setZoom] = useState(1);
+  const [backdropImg, setBackdropImg] = useState(null);
 
   const canvasRef = useRef(null);
   const HANDLE_SIZE = 10;
@@ -127,6 +128,7 @@ export default function FloorplanDesigner({
     activeTool,
     includeLabels,
     includeSelection,
+    backdrop,
     scale = 1,
     pan: panOffset = { x: 0, y: 0 },
   }) => {
@@ -138,6 +140,21 @@ export default function FloorplanDesigner({
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.setTransform(scale, 0, 0, scale, panOffset.x, panOffset.y);
+
+    if (backdrop) {
+      const imgW = backdrop.naturalWidth || backdrop.width;
+      const imgH = backdrop.naturalHeight || backdrop.height;
+      if (imgW && imgH) {
+        const fitScale = Math.min(canvas.width / imgW, canvas.height / imgH);
+        const drawW = imgW * fitScale;
+        const drawH = imgH * fitScale;
+        const drawX = (canvas.width - drawW) / 2;
+        const drawY = (canvas.height - drawH) / 2;
+        ctx.globalAlpha = 0.5;
+        ctx.drawImage(backdrop, drawX, drawY, drawW, drawH);
+        ctx.globalAlpha = 1.0;
+      }
+    }
 
     ctx.strokeStyle = "#f0f0f0";
     ctx.lineWidth = 1;
@@ -288,10 +305,11 @@ export default function FloorplanDesigner({
       activeTool: tool,
       includeLabels: true,
       includeSelection: true,
+      backdrop: backdropImg,
       scale: zoom,
       pan,
     });
-  }, [shapes, currentShape, selectedShapeId, tool, zoom, pan]);
+  }, [shapes, currentShape, selectedShapeId, tool, zoom, pan, backdropImg]);
 
   // --- INTERACTION LOGIC ---
   const getMousePos = (e) => {
@@ -473,6 +491,26 @@ export default function FloorplanDesigner({
       setPan({ x: 0, y: 0 });
     }
   }, [zoom]);
+
+  const handleBackdropUpload = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(img.src);
+      setBackdropImg(img);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(img.src);
+    };
+    img.src = URL.createObjectURL(file);
+  };
+
+  const handleClearBackdrop = () => {
+    setBackdropImg(null);
+  };
 
   const readImageDimensions = (file) =>
     new Promise((resolve, reject) => {
@@ -997,8 +1035,49 @@ export default function FloorplanDesigner({
                   gap: 8,
                 }}
               >
-                Auto-Generate Floorplan
+                Generate Floorplan
               </button>
+              <input
+                id="backdrop-upload-input"
+                type="file"
+                accept="image/*"
+                onChange={handleBackdropUpload}
+                style={{ display: "none" }}
+              />
+              <label
+                htmlFor="backdrop-upload-input"
+                style={{
+                  padding: "8px 12px",
+                  backgroundColor: "#607D8B",
+                  color: "white",
+                  border: "none",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                }}
+              >
+                Upload Backdrop (Trace)
+              </label>
+              {backdropImg && (
+                <button
+                  onClick={handleClearBackdrop}
+                  style={{
+                    padding: "8px 12px",
+                    backgroundColor: "#9E9E9E",
+                    color: "white",
+                    border: "none",
+                    borderRadius: 4,
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  Clear Backdrop
+                </button>
+              )}
               <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                 <button
                   onClick={handleZoomOut}

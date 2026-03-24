@@ -484,8 +484,11 @@ export default function FeedSelection() {
                       }}
                     >
                       <div>
-                        <div style={{ fontSize: 11, color: "#666" }}>
-                          Seat ID: {seat.id}
+                        <div style={{ fontSize: 13, color: "#222" }}>
+                          {seat.label || "Seat"}
+                          <span style={{ fontSize: 11, color: "#777" }}>
+                            {" "} (ID: {seat.id})
+                          </span>
                         </div>
                       </div>
                       <span style={{
@@ -557,7 +560,7 @@ export default function FeedSelection() {
                   color: saveResult.success ? "#2e7d32" : "#c62828"
                 }}>
                   {saveResult.success 
-                    ? `✓ Saved ${saveResult.data.mappings_count} seat mappings!`
+                    ? `✓ Saved ${saveResult.data?.mappings_count ?? Object.values(currentMappings).filter(Boolean).length} seat mappings!`
                     : `✗ ${saveResult.error}`
                   }
                 </div>
