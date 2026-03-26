@@ -144,7 +144,8 @@ def _prepare_png_for_model(frame):
 
 def process_stream(stream_id, stream_url, active_streams, occupancy_data,
                    coordinates, screenshots_dir, screenshot_interval,
-                   predict_fn, stabilize_fn=None, mongo=None, mongo_available=False):
+                   predict_fn, stabilize_fn=None, mongo=None, mongo_available=False,
+                   latest_frames=None):
     """Background thread: capture frames and run detection periodically."""
     print(f"Starting stream processing for {stream_id}: {stream_url}")
     
@@ -166,6 +167,18 @@ def process_stream(stream_id, stream_url, active_streams, occupancy_data,
                 
                 # Get frame dimensions
                 frame_height, frame_width = frame.shape[:2]
+
+                # Cache latest frame for fast UI access (Feed Selection)
+                if latest_frames is not None:
+                    try:
+                        latest_frames[stream_id] = {
+                            "frame": frame,
+                            "width": frame_width,
+                            "height": frame_height,
+                            "timestamp": time.time(),
+                        }
+                    except Exception as cache_err:
+                        print(f"Failed to cache latest frame for {stream_id}: {cache_err}")
                 
                 # Get latest coordinates from active_streams (may have been updated with camera coords)
                 current_coords = active_streams[stream_id].get('coordinates', coordinates)

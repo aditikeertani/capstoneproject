@@ -149,6 +149,7 @@ active_streams = {}  # stream_id -> stream_info
 stream_threads = {}  # stream_id -> thread
 occupancy_data = defaultdict(dict)  # stream_id -> {seat_id: occupancy_info}
 seat_history = defaultdict(dict)  # stream_id -> {seat_id: debounce state}
+latest_frames = {}  # stream_id -> {frame, width, height, timestamp}
 
 def _status_name(status):
     if status == 1:
@@ -956,7 +957,8 @@ def add_stream():
         target=process_stream,
         args=(stream_id, stream_url, active_streams, occupancy_data,
               DUMMY_COORDINATES, SCREENSHOTS_DIR, SCREENSHOT_INTERVAL,
-              predict_occupancy, stabilize_prediction, mongo, MONGO_AVAILABLE),
+              predict_occupancy, stabilize_prediction, mongo, MONGO_AVAILABLE,
+              latest_frames),
         daemon=True
     )
     thread.start()
@@ -1038,29 +1040,51 @@ def get_stream_frame(stream_id):
     if stream_id not in active_streams:
         return jsonify({"error": "Stream not found"}), 404
     
-    stream_url = active_streams[stream_id]["url"]
-    try:
-        frame = capture_frame_from_stream(stream_url)
-    except Exception as e:
-        return jsonify({"error": f"Failed to capture frame: {e}"}), 500
-    
+    stream_info = active_streams[stream_id]
+    stream_url = stream_info["url"]
+
+    cached = latest_frames.get(stream_id)
+    frame = None
+    cached_width = None
+    cached_height = None
+    if isinstance(cached, dict):
+        frame = cached.get("frame")
+        cached_width = cached.get("width")
+        cached_height = cached.get("height")
+
     if frame is None:
-        return jsonify({"error": "Failed to capture frame (no data)"}), 500
-    
+        try:
+            frame = capture_frame_from_stream(stream_url)
+        except Exception as e:
+            return jsonify({"error": f"Failed to capture frame: {e}"}), 500
+
+        if frame is None:
+            return jsonify({"error": "Failed to capture frame (no data)"}), 500
+
+        try:
+            latest_frames[stream_id] = {
+                "frame": frame,
+                "width": frame.shape[1],
+                "height": frame.shape[0],
+                "timestamp": time.time(),
+            }
+        except Exception as cache_err:
+            print(f"Failed to cache latest frame for {stream_id}: {cache_err}")
+
     # Convert frame to JPEG base64
     _, buffer = cv2.imencode('.jpg', frame)
     frame_base64 = base64.b64encode(buffer).decode('utf-8')
     
-    # Get stream info including seats
-    stream_info = active_streams[stream_id]
-    
+    width = cached_width if cached_width is not None else frame.shape[1]
+    height = cached_height if cached_height is not None else frame.shape[0]
+
     return jsonify({
         "stream_id": stream_id,
         "stream_name": stream_info.get("name", ""),
         "stream_url": stream_url,
         "frame": frame_base64,
-        "width": frame.shape[1],
-        "height": frame.shape[0],
+        "width": width,
+        "height": height,
         "seats": stream_info.get("coordinates", []),
         "timestamp": datetime.now().isoformat()
     })
@@ -1271,15 +1295,35 @@ def get_stream_latest(stream_id):
     frame_base64 = None
     frame_width = 640
     frame_height = 480
-    try:
-        stream_url = stream_info["url"]
-        frame = capture_frame_from_stream(stream_url)
+    cached = latest_frames.get(stream_id)
+    frame = None
+    if isinstance(cached, dict):
+        frame = cached.get("frame")
         if frame is not None:
-            _, buffer = cv2.imencode('.jpg', frame)
-            frame_base64 = base64.b64encode(buffer).decode('utf-8')
-            frame_height, frame_width = frame.shape[:2]
-    except Exception as e:
-        print(f"Frame capture failed for heatmap: {e}")
+            frame_width = cached.get("width", frame.shape[1])
+            frame_height = cached.get("height", frame.shape[0])
+
+    if frame is None:
+        try:
+            stream_url = stream_info["url"]
+            frame = capture_frame_from_stream(stream_url)
+            if frame is not None:
+                frame_height, frame_width = frame.shape[:2]
+                try:
+                    latest_frames[stream_id] = {
+                        "frame": frame,
+                        "width": frame_width,
+                        "height": frame_height,
+                        "timestamp": time.time(),
+                    }
+                except Exception as cache_err:
+                    print(f"Failed to cache latest frame for {stream_id}: {cache_err}")
+        except Exception as e:
+            print(f"Frame capture failed for heatmap: {e}")
+
+    if frame is not None:
+        _, buffer = cv2.imencode('.jpg', frame)
+        frame_base64 = base64.b64encode(buffer).decode('utf-8')
 
     # Retrieve the floorplan image for this stream
     floorplan_id = stream_info.get("floorplan_id")
