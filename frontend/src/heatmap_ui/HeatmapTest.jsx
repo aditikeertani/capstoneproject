@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from "react";
 import HeatmapOverlay from "./HeatmapOverlay";
 import { getFloorplanLatest, getFloorplans } from "../api";
 
-const POLL_INTERVAL_MS = 10000; // refresh every 10 seconds
+const POLL_INTERVAL_MS = 5000; // refresh every 5 seconds
 
 export default function HeatmapTest({ onBack }) {
   const [snapshot, setSnapshot] = useState(null);
