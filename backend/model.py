@@ -12,32 +12,36 @@ class ConvBlock(nn.Module):
         return self.relu(self.bn(self.conv(x)))
 
 class Backbone(nn.Module):
-    def __init__(self):
+    def __init__(self, extra_block=False):
         super(Backbone, self).__init__()
-        self.layers = nn.Sequential(
+        layers = [
             ConvBlock(3, 32, kernel_size=3, stride=1, padding=1),
             nn.MaxPool2d(2, 2), # 224 -> 112
             ConvBlock(32, 64, kernel_size=3, stride=1, padding=1),
             nn.MaxPool2d(2, 2), # 112 -> 56
             ConvBlock(64, 128, kernel_size=3, stride=1, padding=1),
             nn.MaxPool2d(2, 2), # 56 -> 28
-            # --- New Layers ---
             ConvBlock(128, 256, kernel_size=3, stride=1, padding=1),
             nn.MaxPool2d(2, 2), # 28 -> 14
             ConvBlock(256, 512, kernel_size=3, stride=1, padding=1),
             nn.MaxPool2d(2, 2)  # 14 -> 7
-        )
+        ]
+        if extra_block:
+            layers.extend([
+                ConvBlock(512, 512, kernel_size=3, stride=1, padding=1),
+                nn.MaxPool2d(2, 2)  # 7 -> 3
+            ])
+        self.layers = nn.Sequential(*layers)
 
     def forward(self, x):
         return self.layers(x)
 
 class Classifier(nn.Module):
-    def __init__(self, num_classes):
+    def __init__(self, num_classes, extra_block=False):
         super(Classifier, self).__init__()
-        self.backbone = Backbone()
+        self.backbone = Backbone(extra_block=extra_block)
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        # Changed from 128 to 512 to match the new Backbone output
-        self.fc = nn.Linear(512, num_classes) 
+        self.fc = nn.Linear(512, num_classes)
 
     def forward(self, x):
         x = self.backbone(x)

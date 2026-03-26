@@ -135,6 +135,7 @@ MODELS_DIR = os.path.join(BACKEND_DIR, 'models')
 os.makedirs(MODELS_DIR, exist_ok=True)
 
 MODEL_PATHS = [
+    os.path.join(MODELS_DIR, 'newmodel.pth'),
     os.path.join(MODELS_DIR, 'ModelBest.pth'),
     os.path.join(OD_MODEL_PATH, 'ModelBest.pth')
 ]
@@ -213,6 +214,52 @@ model = None
 device = None
 model_loaded_path = None
 
+def _is_state_dict(obj):
+    return (
+        isinstance(obj, dict)
+        and len(obj) > 0
+        and all(isinstance(k, str) for k in obj.keys())
+        and any(k.endswith(".weight") for k in obj.keys())
+    )
+
+def _extract_state_dict(ckpt):
+    if _is_state_dict(ckpt):
+        return ckpt
+    if isinstance(ckpt, dict):
+        for key in ("state_dict", "model_state_dict", "model"):
+            candidate = ckpt.get(key)
+            if _is_state_dict(candidate):
+                return candidate
+    if hasattr(ckpt, "state_dict"):
+        return ckpt.state_dict()
+    raise ValueError("Unsupported checkpoint format")
+
+def _strip_module_prefix(state_dict):
+    if not isinstance(state_dict, dict):
+        return state_dict
+    if not any(k.startswith("module.") for k in state_dict.keys()):
+        return state_dict
+    return {
+        (k[7:] if k.startswith("module.") else k): v
+        for k, v in state_dict.items()
+    }
+
+def _infer_extra_block(state_dict):
+    max_idx = -1
+    for key in state_dict.keys():
+        if not (key.startswith("backbone.layers.") and key.endswith("conv.weight")):
+            continue
+        parts = key.split(".")
+        if len(parts) < 4:
+            continue
+        try:
+            idx = int(parts[2])
+        except Exception:
+            continue
+        if idx > max_idx:
+            max_idx = idx
+    return max_idx >= 10
+
 def load_model():
     """Load the occupancy detection model."""
     global model, device, model_loaded_path
@@ -227,13 +274,16 @@ def load_model():
         for model_path in MODEL_PATHS:
             if os.path.exists(model_path):
                 try:
-                    temp_model = Classifier(num_classes=2).to(device)
-                    temp_model.load_state_dict(torch.load(model_path, map_location=device))
+                    checkpoint = torch.load(model_path, map_location=device)
+                    state_dict = _strip_module_prefix(_extract_state_dict(checkpoint))
+                    extra_block = _infer_extra_block(state_dict)
+                    temp_model = Classifier(num_classes=2, extra_block=extra_block).to(device)
+                    temp_model.load_state_dict(state_dict)
                     model = temp_model
                     model_loaded_path = model_path
                     model.eval()
                     
-                    print(f"Model loaded from: {model_path}")
+                    print(f"Model loaded from: {model_path} (extra_block={extra_block})")
                     return True
                 except Exception as e:
                     print(f"Failed to load weights from {model_path}: {e}")
@@ -1268,6 +1318,10 @@ def get_floorplan_latest(floorplan_id):
             "y": seat.get("y", 0),
             "width": seat.get("width", 0),
             "height": seat.get("height", 0),
+            "camera_x": seat.get("camera_x"),
+            "camera_y": seat.get("camera_y"),
+            "camera_width": seat.get("camera_width", seat.get("camera_w")),
+            "camera_height": seat.get("camera_height", seat.get("camera_h")),
             "label": seat.get("label", ""),
             "type": seat.get("type"),
             "status": agg.get("status", 0),

@@ -13,6 +13,16 @@ function isEntrance(item) {
   return false;
 }
 
+function hasCameraMapping(item) {
+  if (!item) return false;
+  const cx = Number(item.camera_x);
+  const cy = Number(item.camera_y);
+  const cw = Number(item.camera_width ?? item.camera_w);
+  const ch = Number(item.camera_height ?? item.camera_h);
+  if (![cx, cy, cw, ch].every(Number.isFinite)) return false;
+  return cx > 0 && cy > 0 && cw > 0 && ch > 0;
+}
+
 function seatsToHeatmapPoints(snapshot, displayW, displayH, useFloorplan) {
   if (!snapshot?.seats?.length) return [];
 
@@ -28,6 +38,7 @@ function seatsToHeatmapPoints(snapshot, displayW, displayH, useFloorplan) {
     .filter(s => {
       const status = Number(s.status);
       if (status === -1) return false; // Explicitly exclude offline seats from glow
+      if (!hasCameraMapping(s)) return false; // Unmapped seats shouldn't glow
       return status === 1 && !isEntrance(s);
     })
     .map(s => {
@@ -39,10 +50,12 @@ function seatsToHeatmapPoints(snapshot, displayW, displayH, useFloorplan) {
         nx = clamp(cx / refW, 0, 1);
         ny = clamp(cy / refH, 0, 1);
       } else {
-        const hasCameraCoords = s.camera_x != null && s.camera_width > 0;
+        const hasCameraCoords = hasCameraMapping(s);
         if (hasCameraCoords) {
-          nx = clamp((Number(s.camera_x) + Number(s.camera_width) / 2) / refW, 0, 1);
-          ny = clamp((Number(s.camera_y) + Number(s.camera_height) / 2) / refH, 0, 1);
+          const cw = Number(s.camera_width ?? s.camera_w);
+          const ch = Number(s.camera_height ?? s.camera_h);
+          nx = clamp((Number(s.camera_x) + cw / 2) / refW, 0, 1);
+          ny = clamp((Number(s.camera_y) + ch / 2) / refH, 0, 1);
         } else {
           const cx = Number(s.x) + (Number(s.width) || 0) / 2;
           const cy = Number(s.y) + (Number(s.height) || 0) / 2;
@@ -162,16 +175,17 @@ export default function HeatmapOverlay({
 
           // 👉 3. RENDER SEATS (Warped to exact floorplan shapes)
           const status = Number(item.status);
-          const isOffline = status === -1;
+          const isUnmapped = !hasCameraMapping(item);
+          const isOffline = status === -1 || isUnmapped;
           const occupied = status === 1;
 
           // Determine dimensions based on whether we are looking at the floorplan or the camera feed
           let renderX, renderY, renderW, renderH;
-          if (!useFloorplan && item.camera_x != null && item.camera_width > 0) {
+          if (!useFloorplan && hasCameraMapping(item)) {
             renderX = Number(item.camera_x);
             renderY = Number(item.camera_y);
-            renderW = Number(item.camera_width);
-            renderH = Number(item.camera_height);
+            renderW = Number(item.camera_width ?? item.camera_w);
+            renderH = Number(item.camera_height ?? item.camera_h);
           } else {
             renderX = Number(item.x);
             renderY = Number(item.y);
@@ -243,7 +257,7 @@ export default function HeatmapOverlay({
 
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
           <div style={{ width: 24, height: 24, backgroundColor: "rgba(0, 0, 0, 0.7)", border: "2px solid rgba(100, 100, 100, 0.9)" }} />
-          <div>Camera offline</div>
+          <div>Camera offline or unmapped</div>
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
