@@ -7,7 +7,18 @@ import LoginPage from "./components/LoginPage";
 import Dashboard from "./components/Dashboard";
 import HeatmapTest from "./heatmap_ui/HeatmapTest";
 
+import { Routes, Route } from "react-router-dom";
+
 export default function App() {
+  return (
+    <Routes>
+      <Route path="/embed" element={<HeatmapTest />} />
+      <Route path="*" element={<MainApp />} />
+    </Routes>
+  );
+}
+
+function MainApp() {
   const [currentStep, setCurrentStep] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [setupKey, setSetupKey] = useState(0);

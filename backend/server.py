@@ -1345,17 +1345,12 @@ def get_stream_latest(stream_id):
 @app.route("/floorplans/<floorplan_id>/latest", methods=["GET"])
 def get_floorplan_latest(floorplan_id):
     """Get the latest aggregated occupancy snapshot for a floorplan."""
-    user, resp, status = require_auth()
-    if resp:
-        return resp, status
-    user_id = user.get("sub")
-
     if not MONGO_AVAILABLE or not mongo:
         return jsonify({"error": "MongoDB not available"}), 503
 
     try:
         floorplan_doc = mongo.db.floorplans.find_one(
-            {"_id": floorplan_id, "created_by": user_id},
+            {"_id": floorplan_id},
             {"image_data": 0}
         )
         if not floorplan_doc:

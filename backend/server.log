@@ -1,0 +1,15 @@
+objc[25116]: Class AVFFrameReceiver is implemented in both /Users/divya/Development/capstone/capstoneproject/backend/venv/lib/python3.14/site-packages/cv2/.dylibs/libavdevice.61.3.100.dylib (0x106d783a8) and /Users/divya/Development/capstone/capstoneproject/backend/venv/lib/python3.14/site-packages/av/.dylibs/libavdevice.62.1.100.dylib (0x142c843a8). This may cause spurious casting failures and mysterious crashes. One of the duplicates must be removed or renamed.
+objc[25116]: Class AVFAudioReceiver is implemented in both /Users/divya/Development/capstone/capstoneproject/backend/venv/lib/python3.14/site-packages/cv2/.dylibs/libavdevice.61.3.100.dylib (0x106d783f8) and /Users/divya/Development/capstone/capstoneproject/backend/venv/lib/python3.14/site-packages/av/.dylibs/libavdevice.62.1.100.dylib (0x142c843f8). This may cause spurious casting failures and mysterious crashes. One of the duplicates must be removed or renamed.
+============================================================
+Starting Occupancy Detection Server
+============================================================
+🔧 PyTorch available, using device: cpu
+Model loaded from: /Users/divya/Development/capstone/capstoneproject/backend/models/newmodel.pth (extra_block=True)
+Screenshots will be saved to: /Users/divya/Development/capstone/capstoneproject/backend/screenshots
+Screenshot interval: 10 seconds
+Server starting at http://127.0.0.1:5001
+============================================================
+ * Serving Flask app 'server'
+ * Debug mode: on
+Address already in use
+Port 5001 is in use by another program. Either identify and stop that program, or start the server with a different port.

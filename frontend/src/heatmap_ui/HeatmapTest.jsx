@@ -25,7 +25,7 @@ export default function HeatmapTest({ onBack }) {
     const qpFloorplanId =
       params.get("floorplanId") || params.get("floorplan_id") || "";
     const embedParam = (params.get("embed") || "").toLowerCase();
-    const embed = embedParam === "1" || embedParam === "true" || embedParam === "yes";
+    const embed = embedParam === "1" || embedParam === "true" || embedParam === "yes" || window.location.pathname.includes("/embed");
     if (qpFloorplanId) setInitialFloorplanId(qpFloorplanId);
     if (embed) setIsEmbed(true);
   }, []);
@@ -58,7 +58,8 @@ export default function HeatmapTest({ onBack }) {
         }
       } catch (e) {
         console.error("Failed to load floorplans:", e);
-        setError("Failed to load floorplans. Is the backend running?");
+        if (initialFloorplanId) setSelectedFloorplanId(initialFloorplanId);
+        if (!initialFloorplanId) setError("Failed to load floorplans. Is the backend running?");
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -114,9 +115,8 @@ export default function HeatmapTest({ onBack }) {
       setEmbedLink("");
       return;
     }
-    const base = `${window.location.origin}${window.location.pathname}`;
+    const base = `${window.location.origin}/embed`;
     const params = new URLSearchParams();
-    params.set("embed", "1");
     params.set("floorplanId", selectedFloorplanId);
     setEmbedLink(`${base}?${params.toString()}`);
   }, [selectedFloorplanId]);
