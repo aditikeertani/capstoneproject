@@ -10,6 +10,18 @@ const authHeaders = () => {
   return token ? { Authorization: `Bearer ${token}` } : {};
 };
 
+const DEFAULT_TIMEOUT_MS = 8000;
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timerId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timerId);
+  }
+}
+
 export async function ping() {
   const res = await fetch(`${BASE_URL}/`);
   if (!res.ok) throw new Error("Ping failed");
@@ -125,7 +137,15 @@ export async function captureStream(streamId) {
  * Get a single frame from a stream as base64
  */
 export async function getStreamFrame(streamId) {
-  const res = await fetch(`${BASE_URL}/streams/${streamId}/frame`);
+  let res;
+  try {
+    res = await fetchWithTimeout(`${BASE_URL}/streams/${streamId}/frame`);
+  } catch (err) {
+    if (err && err.name === "AbortError") {
+      throw new Error("Stream frame request timed out");
+    }
+    throw err;
+  }
   if (!res.ok) {
     let details = "";
     try {
@@ -141,11 +161,19 @@ export async function getStreamFrame(streamId) {
  * Get a frame from any stream URL (doesn't require stream to be registered)
  */
 export async function getFrameFromUrl(url) {
-  const res = await fetch(`${BASE_URL}/frame-from-url`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url }),
-  });
+  let res;
+  try {
+    res = await fetchWithTimeout(`${BASE_URL}/frame-from-url`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+  } catch (err) {
+    if (err && err.name === "AbortError") {
+      throw new Error("Frame request timed out");
+    }
+    throw err;
+  }
   if (!res.ok) throw new Error("Failed to get frame from URL");
   return res.json();
 }

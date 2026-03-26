@@ -79,6 +79,10 @@ export default function App() {
     resetSetupState();
     setCurrentStep(1);
   };
+  const backToDashboard = () => {
+    resetSetupState();
+    setCurrentStep(0);
+  };
   const handleLogin = () => {
     setIsAuthenticated(true);
     setCurrentStep(0);
@@ -182,6 +186,7 @@ export default function App() {
             savedFloorplans={savedFloorplans}
             setSavedFloorplans={setSavedFloorplans}
             setupKey={setupKey}
+            onBack={backToDashboard}
           />
 
           <div style={{ marginTop: 20 }}>
@@ -304,7 +309,7 @@ export default function App() {
               alignItems: "stretch",
             }}
           >
-            <HeatmapTest onBack={() => goToStep(0)} />
+            <HeatmapTest onBack={backToDashboard} />
           </div>
         </div>
       )}

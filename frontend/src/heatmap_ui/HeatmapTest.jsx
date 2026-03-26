@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from "react";
 import HeatmapOverlay from "./HeatmapOverlay";
 import { getFloorplanLatest, getFloorplans } from "../api";
 
-const POLL_INTERVAL_MS = 30000; // refresh every 30 seconds
+const POLL_INTERVAL_MS = 10000; // refresh every 10 seconds
 
 export default function HeatmapTest({ onBack }) {
   const [snapshot, setSnapshot] = useState(null);
@@ -18,6 +18,7 @@ export default function HeatmapTest({ onBack }) {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastUpdated, setLastUpdated] = useState(null);
   const containerRef = useRef(null);
+  const pollRef = useRef(null);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -84,7 +85,13 @@ export default function HeatmapTest({ onBack }) {
   useEffect(() => {
     if (!autoRefresh || !selectedFloorplanId) return;
     const timer = setInterval(fetchSnapshot, POLL_INTERVAL_MS);
-    return () => clearInterval(timer);
+    pollRef.current = timer;
+    return () => {
+      clearInterval(timer);
+      if (pollRef.current === timer) {
+        pollRef.current = null;
+      }
+    };
   }, [autoRefresh, selectedFloorplanId, fetchSnapshot]);
 
   // Load immediately when floorplan changes
@@ -143,6 +150,17 @@ export default function HeatmapTest({ onBack }) {
     setTimeout(() => setCopyStatus(""), 2000);
   };
 
+  const handleBack = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    setAutoRefresh(false);
+    setSnapshot(null);
+    setSelectedFloorplanId("");
+    if (onBack) onBack();
+  };
+
   return (
     <div>
       {!isEmbed && (
@@ -157,7 +175,7 @@ export default function HeatmapTest({ onBack }) {
           }}>
             {onBack && (
               <button
-                onClick={onBack}
+                onClick={handleBack}
                 style={{
                   padding: "8px 12px",
                   backgroundColor: "#f1f3f5",
@@ -167,7 +185,7 @@ export default function HeatmapTest({ onBack }) {
                   cursor: "pointer",
                 }}
               >
-                ← Back to Dashboard
+                &larr; Back to Dashboard
               </button>
             )}
             <select

@@ -9,6 +9,7 @@ export default function FloorplanDesigner({
   savedFloorplans = [],
   setSavedFloorplans,
   setupKey = 0,
+  onBack,
 }) {
   const [selectedFloorId, setSelectedFloorId] = useState("");
   const [selectedStreamId, setSelectedStreamId] = useState("");
@@ -888,6 +889,22 @@ export default function FloorplanDesigner({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {onBack && (
+        <button
+          onClick={onBack}
+          style={{
+            alignSelf: "flex-start",
+            padding: "8px 12px",
+            backgroundColor: "#f1f3f5",
+            color: "#333",
+            border: "1px solid #ddd",
+            borderRadius: 4,
+            cursor: "pointer",
+          }}
+        >
+          &lt;- Back to Dashboard
+        </button>
+      )}
       <div
         style={{
           display: "flex",

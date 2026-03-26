@@ -123,7 +123,7 @@ def require_auth():
         return None, jsonify({"error": "Invalid token"}), 401
 
 # Configuration
-SCREENSHOT_INTERVAL = 30  # seconds between screenshots
+SCREENSHOT_INTERVAL = 10  # seconds between screenshots
 NUM_CLASSES = 2  # model has 2 output neurons
 IMG_SIZE = 224
 # 2-class status: model output maps directly to these
@@ -148,6 +148,79 @@ os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 active_streams = {}  # stream_id -> stream_info
 stream_threads = {}  # stream_id -> thread
 occupancy_data = defaultdict(dict)  # stream_id -> {seat_id: occupancy_info}
+seat_history = defaultdict(dict)  # stream_id -> {seat_id: debounce state}
+
+def _status_name(status):
+    if status == 1:
+        return "Occupied"
+    if status == 0:
+        return "Unoccupied"
+    if status == -1:
+        return "Offline"
+    return ""
+
+def stabilize_prediction(stream_id, seat_id, raw_status, raw_confidence):
+    """Debounce occupancy changes: require two consecutive identical raw predictions."""
+    stream_hist = seat_history.setdefault(stream_id, {})
+    state = stream_hist.get(seat_id)
+
+    try:
+        raw_status = int(raw_status)
+    except Exception:
+        raw_status = -1
+
+    try:
+        raw_confidence = float(raw_confidence)
+    except Exception:
+        raw_confidence = 0.0
+
+    if state is None:
+        official_status = raw_status if raw_status in (-1, 0, 1) else 0
+        official_confidence = 0 if official_status == -1 else raw_confidence
+        state = {
+            "official_status": official_status,
+            "official_confidence": official_confidence,
+            "official_is_occupied": official_status == 1,
+            "last_raw_status": raw_status,
+        }
+        stream_hist[seat_id] = state
+    else:
+        official_status = state.get("official_status")
+        last_raw = state.get("last_raw_status")
+
+        if raw_status == -1:
+            state["official_status"] = -1
+            state["official_confidence"] = 0
+            state["official_is_occupied"] = False
+            state["last_raw_status"] = raw_status
+        elif official_status in (None, -1):
+            if raw_status in (0, 1):
+                state["official_status"] = raw_status
+                state["official_confidence"] = raw_confidence
+                state["official_is_occupied"] = raw_status == 1
+            state["last_raw_status"] = raw_status
+        elif raw_status == official_status:
+            state["last_raw_status"] = raw_status
+            state["official_confidence"] = raw_confidence
+            state["official_is_occupied"] = official_status == 1
+        else:
+            if last_raw == raw_status:
+                state["official_status"] = raw_status
+                state["official_confidence"] = raw_confidence
+                state["official_is_occupied"] = raw_status == 1
+            state["last_raw_status"] = raw_status
+
+    official_status = state["official_status"]
+    if official_status == -1:
+        state["official_confidence"] = 0
+        state["official_is_occupied"] = False
+
+    return {
+        "status": official_status,
+        "status_name": _status_name(official_status),
+        "confidence": state["official_confidence"],
+        "is_occupied": state["official_is_occupied"],
+    }
 
 # Floorplan helpers
 def load_floorplan_asset(floorplan_id):
@@ -303,7 +376,18 @@ def load_model():
     except Exception as e:
         print(f"Error during model setup: {e}")
         model = None
-        return False
+    return False
+
+def _prepare_png_for_model(frame):
+    """Encode to PNG and decode back to mimic PNG input for the model."""
+    try:
+        ok, buffer = cv2.imencode(".png", frame)
+        if not ok:
+            return frame
+        decoded = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+        return decoded if decoded is not None else frame
+    except Exception:
+        return frame
 
 
 def predict_occupancy(image):
@@ -379,7 +463,7 @@ def predict_occupancy(image):
             
             # 5. Save it!
             timestamp = datetime.now().strftime("%H%M%S")
-            save_path = os.path.join(debug_dir, f"crop_{timestamp}_{result_text}.jpg")
+            save_path = os.path.join(debug_dir, f"crop_{timestamp}_{result_text}.png")
             cv2.imwrite(save_path, debug_img)
             
             print(f"  📸 Saved debug crop to: {save_path}")
@@ -688,7 +772,7 @@ def submit_floorplan():
         target=process_stream,
         args=(stream_id, stream_url, active_streams, occupancy_data,
               seats, SCREENSHOTS_DIR, SCREENSHOT_INTERVAL,
-              predict_occupancy, mongo, MONGO_AVAILABLE),
+              predict_occupancy, stabilize_prediction, mongo, MONGO_AVAILABLE),
         daemon=True
     )
     thread.start()
@@ -872,7 +956,7 @@ def add_stream():
         target=process_stream,
         args=(stream_id, stream_url, active_streams, occupancy_data,
               DUMMY_COORDINATES, SCREENSHOTS_DIR, SCREENSHOT_INTERVAL,
-              predict_occupancy, mongo, MONGO_AVAILABLE),
+              predict_occupancy, stabilize_prediction, mongo, MONGO_AVAILABLE),
         daemon=True
     )
     thread.start()
@@ -894,6 +978,8 @@ def remove_stream(stream_id):
     
     if stream_id in occupancy_data:
         del occupancy_data[stream_id]
+    if stream_id in seat_history:
+        del seat_history[stream_id]
     
     return jsonify({"message": f"Stream {stream_id} stopped and removed"})
 
@@ -913,7 +999,9 @@ def manual_capture(stream_id):
     screenshot_path = save_screenshot(frame, stream_id, SCREENSHOTS_DIR)
     
     # Run prediction
-    prediction = predict_occupancy(frame)
+    prediction = predict_occupancy(_prepare_png_for_model(frame))
+    raw_status = prediction.get("class_index", -1)
+    raw_confidence = prediction.get("confidence", 0)
     
     # Get frame dimensions
     height, width = frame.shape[:2]
@@ -921,6 +1009,7 @@ def manual_capture(stream_id):
     # Build results with coordinates
     results = []
     for coord in DUMMY_COORDINATES:
+        stable = stabilize_prediction(stream_id, coord["id"], raw_status, raw_confidence)
         seat_result = {
             "id": coord["id"],
             "x": coord["x"],
@@ -928,8 +1017,10 @@ def manual_capture(stream_id):
             "width": width,
             "height": height,
             "label": coord["label"],
-            "status": prediction["class_index"],
-            "confidence": prediction["confidence"]
+            "status": stable["status"],
+            "status_name": stable["status_name"],
+            "confidence": stable["confidence"],
+            "is_occupied": stable["is_occupied"],
         }
         results.append(seat_result)
         occupancy_data[stream_id][coord["id"]] = seat_result

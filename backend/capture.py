@@ -64,11 +64,13 @@ def mark_stream_offline(stream_id, active_streams, occupancy_data, coordinates, 
     if reason:
         print(f"Stream {stream_id} offline: {reason}")
 
-def capture_frame_from_stream(stream_url):
+def capture_frame_from_stream(stream_url, max_wait_s=4.0, max_packets=200):
     if stream_url is None:
         return None
     clean_url = str(stream_url).strip().strip('"').strip("'").rstrip("\\")
     frame_img = None
+    fallback_frame = None
+    start_time = time.time()
     try:
         video = av.open(
             clean_url,
@@ -76,6 +78,7 @@ def capture_frame_from_stream(stream_url):
             options={
                 "rtsp_transport": "tcp",
                 "stimeout": "5000000",
+                "rw_timeout": "5000000",
             },
         )
     except Exception as e:
@@ -83,12 +86,28 @@ def capture_frame_from_stream(stream_url):
         return None
 
     try:
+        packets_processed = 0
         for packet in video.demux():
+            packets_processed += 1
             for frame in packet.decode():
-                if type(frame) is av.video.frame.VideoFrame and frame.key_frame:
-                    frame_img = frame.to_ndarray(format="bgr24")
+                if type(frame) is not av.video.frame.VideoFrame:
+                    continue
+
+                img = frame.to_ndarray(format="bgr24")
+                if fallback_frame is None:
+                    fallback_frame = img
+
+                if getattr(frame, "key_frame", False):
+                    frame_img = img
                     break
+
             if frame_img is not None:
+                break
+
+            if packets_processed >= max_packets:
+                break
+
+            if (time.time() - start_time) >= max_wait_s:
                 break
     except Exception as e:
         print(f"Error capturing frame from {clean_url}: {e}")
@@ -99,21 +118,33 @@ def capture_frame_from_stream(stream_url):
         except Exception:
             pass
 
-    return frame_img
+    return frame_img if frame_img is not None else fallback_frame
 
 
 def save_screenshot(frame, stream_id, screenshots_dir):
     """Save a frame as a screenshot."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    screenshot_path = os.path.join(screenshots_dir, f"{stream_id}_{timestamp}.jpg")
+    screenshot_path = os.path.join(screenshots_dir, f"{stream_id}_{timestamp}.png")
     cv2.imwrite(screenshot_path, frame)
     print(f"Screenshot saved: {screenshot_path}")
     return screenshot_path
 
 
-def process_stream(stream_id, stream_url, active_streams, occupancy_data, 
+def _prepare_png_for_model(frame):
+    """Encode to PNG and decode back to mimic PNG input for the model."""
+    try:
+        ok, buffer = cv2.imencode(".png", frame)
+        if not ok:
+            return frame
+        decoded = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+        return decoded if decoded is not None else frame
+    except Exception:
+        return frame
+
+
+def process_stream(stream_id, stream_url, active_streams, occupancy_data,
                    coordinates, screenshots_dir, screenshot_interval,
-                   predict_fn, mongo=None, mongo_available=False):
+                   predict_fn, stabilize_fn=None, mongo=None, mongo_available=False):
     """Background thread: capture frames and run detection periodically."""
     print(f"Starting stream processing for {stream_id}: {stream_url}")
     
@@ -173,11 +204,11 @@ def process_stream(stream_id, stream_url, active_streams, occupancy_data,
                         
                         if cropped_frame.size > 0:
                             # Run prediction on cropped region
-                            prediction = predict_fn(cropped_frame)
+                            prediction = predict_fn(_prepare_png_for_model(cropped_frame))
                             print(f"Predicted seat {coord.get('label', seat_id)}: {prediction['class_name']} (camera region)")
                         else:
                             # Fallback to full frame if crop fails
-                            prediction = predict_fn(frame)
+                            prediction = predict_fn(_prepare_png_for_model(frame))
                             print(f"Predicted seat {coord.get('label', seat_id)}: {prediction['class_name']} (full frame - crop failed)")
                     else:
                         # No camera coordinates: skip prediction for this seat in this stream
@@ -186,6 +217,20 @@ def process_stream(stream_id, stream_url, active_streams, occupancy_data,
                         print(f"  ❌ No camera coords → skipping prediction for {coord.get('label', seat_id)}")
                         continue
                     
+                    raw_status = prediction.get("class_index", -1)
+                    raw_confidence = prediction.get("confidence", 0)
+                    if stabilize_fn:
+                        stable = stabilize_fn(stream_id, seat_id, raw_status, raw_confidence)
+                        status = stable.get("status", raw_status)
+                        status_name = stable.get("status_name", prediction.get("class_name", "Offline"))
+                        confidence = stable.get("confidence", raw_confidence)
+                        is_occupied = stable.get("is_occupied", bool(prediction.get("is_occupied", False)))
+                    else:
+                        status = raw_status
+                        status_name = prediction.get("class_name", "Offline")
+                        confidence = raw_confidence
+                        is_occupied = bool(prediction.get("is_occupied", False))
+
                     # Build seat result with all coordinates
                     seat_result = {
                         "id": seat_id,
@@ -202,10 +247,10 @@ def process_stream(stream_id, stream_url, active_streams, occupancy_data,
                         # Seat info
                         "label": coord.get("label", "Unknown"),
                         # Prediction result
-                        "status": prediction.get("class_index", -1),
-                        "status_name": prediction.get("class_name", "Offline"),
-                        "confidence": prediction.get("confidence", 0),
-                        "is_occupied": bool(prediction.get("is_occupied", False)),
+                        "status": status,
+                        "status_name": status_name,
+                        "confidence": confidence,
+                        "is_occupied": is_occupied,
                     }
                     if seat_result["status"] == -1:
                         seat_result["confidence"] = 0
