@@ -4,7 +4,6 @@ import h337 from './heatmap.js';
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
-
 function isEntrance(item) {
   if (!item) return false;
   if (item.type === "entrance") return true;
@@ -22,7 +21,6 @@ function hasCameraMapping(item) {
   if (![cx, cy, cw, ch].every(Number.isFinite)) return false;
   return cx > 0 && cy > 0 && cw > 0 && ch > 0;
 }
-
 function seatsToHeatmapPoints(snapshot, displayW, displayH, useFloorplan) {
   if (!snapshot?.seats?.length) return [];
 
@@ -71,7 +69,6 @@ function seatsToHeatmapPoints(snapshot, displayW, displayH, useFloorplan) {
       };
     });
 }
-
 export default function HeatmapOverlay({
   snapshot,                 
   width: maxWidth = 960,    
@@ -79,9 +76,9 @@ export default function HeatmapOverlay({
   imageSrc = null,          
   showLegend = true,
 }) {
+  const useFloorplan = !!snapshot?.floorplan;
   const containerRef = useRef(null);
   const heatmapRef = useRef(null);
-  const useFloorplan = !!snapshot?.floorplan;
 
   const sourceW = useFloorplan
     ? (snapshot?.floorplan_width || 1920)
@@ -120,10 +117,9 @@ export default function HeatmapOverlay({
     if (!heatmapRef.current) return;
     heatmapRef.current.setData({ max: 1, data: points });
   }, [points]);
-
   return (
     <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
-    <div style={{ position: "relative", width: displayW, height: displayH }}>
+    <div ref={containerRef} style={{ position: "relative", width: displayW, height: displayH }}>
       {imageSrc ? (
         <img
           src={imageSrc}
@@ -135,9 +131,6 @@ export default function HeatmapOverlay({
           {snapshot ? "No frame available" : "Waiting for data…"}
         </div>
       )}
-
-      {/* The cloudy heatmap layer */}
-      <div ref={containerRef} style={{ position: "absolute", top: 0, left: 0, width: displayW, height: displayH }} />
 
       {/* The precise Shapes layer */}
       <svg
@@ -172,7 +165,6 @@ export default function HeatmapOverlay({
               </g>
             );
           }
-
           // 👉 3. RENDER SEATS (Warped to exact floorplan shapes)
           const status = Number(item.status);
           const isUnmapped = !hasCameraMapping(item);
@@ -192,7 +184,6 @@ export default function HeatmapOverlay({
             renderW = Number(item.width) || 40;
             renderH = Number(item.height) || 40;
           }
-
           const cx = renderX + renderW / 2;
           const cy = renderY + renderH / 2;
 
