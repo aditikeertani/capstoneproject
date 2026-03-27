@@ -109,6 +109,16 @@ export default function HeatmapTest({ onBack }) {
     ? `data:image/jpeg;base64,${snapshot.frame}`
     : null;
   const imageSrc = floorplanSrc || frameSrc;
+  const streamsStatus = snapshot?.streams_status || {};
+  const offlineStreams = Object.entries(streamsStatus)
+    .filter(([, status]) => status?.status === "offline" || status?.status === "stale")
+    .map(([streamId]) => streamId);
+  const offlineDetails = offlineStreams.map((streamId) => {
+    const status = streamsStatus[streamId] || {};
+    const lastFrame = status.last_frame_ts ? `last frame ${status.last_frame_ts}` : "no recent frame";
+    const errorNote = status.last_error ? `, error: ${status.last_error}` : "";
+    return `${streamId} (${lastFrame}${errorNote})`;
+  });
 
   useEffect(() => {
     if (!selectedFloorplanId) {
@@ -303,6 +313,21 @@ export default function HeatmapTest({ onBack }) {
           marginBottom: 12,
         }}>
           {error}
+        </div>
+      )}
+      {offlineStreams.length > 0 && (
+        <div style={{
+          padding: 10,
+          backgroundColor: "#fff8e1",
+          color: "#8d6e63",
+          borderRadius: 4,
+          marginBottom: 12,
+          fontSize: 12,
+        }}>
+          <strong>Stream offline or stale.</strong> Showing last known occupancy.
+          <div style={{ marginTop: 4 }}>
+            {offlineDetails.join("; ")}
+          </div>
         </div>
       )}
 

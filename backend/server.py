@@ -128,6 +128,16 @@ NUM_CLASSES = 2  # model has 2 output neurons
 IMG_SIZE = 224
 # 2-class status: model output maps directly to these
 CLASS_NAMES = ["Unoccupied", "Occupied"]
+OCCUPIED_CLASS_INDEX = int(os.environ.get("OCCUPIED_CLASS_INDEX", "1"))
+
+def map_class_to_status(class_idx):
+    try:
+        class_idx = int(class_idx)
+    except Exception:
+        return -1
+    if class_idx < 0:
+        return -1
+    return 1 if class_idx == OCCUPIED_CLASS_INDEX else 0
 
 # Model paths - will check in order
 BACKEND_DIR = os.path.dirname(__file__)
@@ -150,6 +160,7 @@ stream_threads = {}  # stream_id -> thread
 occupancy_data = defaultdict(dict)  # stream_id -> {seat_id: occupancy_info}
 seat_history = defaultdict(dict)  # stream_id -> {seat_id: debounce state}
 latest_frames = {}  # stream_id -> {frame, width, height, timestamp}
+stream_status = defaultdict(dict)  # stream_id -> status info
 
 def _status_name(status):
     if status == 1:
@@ -159,6 +170,31 @@ def _status_name(status):
     if status == -1:
         return "Offline"
     return ""
+
+def _format_ts(ts):
+    if not ts:
+        return None
+    try:
+        return datetime.fromtimestamp(ts).isoformat()
+    except Exception:
+        return None
+
+def _format_stream_status(status):
+    if not isinstance(status, dict):
+        return {
+            "status": "unknown",
+            "last_frame_ts": None,
+            "last_attempt_ts": None,
+            "last_error": None,
+            "last_transport": None,
+        }
+    return {
+        "status": status.get("status", "unknown"),
+        "last_frame_ts": _format_ts(status.get("last_frame_ts")),
+        "last_attempt_ts": _format_ts(status.get("last_attempt_ts")),
+        "last_error": status.get("last_error"),
+        "last_transport": status.get("last_transport"),
+    }
 
 def stabilize_prediction(stream_id, seat_id, raw_status, raw_confidence):
     """Debounce occupancy changes: require two consecutive identical raw predictions."""
@@ -399,6 +435,8 @@ def predict_occupancy(image):
         return {
             "class_index": -1,
             "class_name": "Error",
+            "status": -1,
+            "status_name": "Offline",
             "confidence": 0,
             "is_occupied": False,
             "error": "Model not loaded. Place model file in backend/models/"
@@ -426,6 +464,9 @@ def predict_occupancy(image):
         class_idx = predicted_idx.item()
         conf = confidence.item()
         result_text = CLASS_NAMES[class_idx]
+        status = map_class_to_status(class_idx)
+        status_name = _status_name(status)
+        display_name = status_name or result_text
         
         # Log ALL class probabilities for debugging
         all_probs = probs[0].cpu().numpy()
@@ -448,11 +489,11 @@ def predict_occupancy(image):
             
             # 3. Format the label exactly like predict.py
             if conf < 0.75:
-                label = f"UnSure {result_text}: {conf*100:.1f}"
+                label = f"UnSure {display_name}: {conf*100:.1f}"
                 color = (0, 165, 255) # Orange for unsure
             else:
-                label = f"{result_text}: {conf*100:.1f}%"
-                color = (0, 255, 0) if class_idx == 0 else (0, 0, 255) # Green=Empty, Red=Occupied
+                label = f"{display_name}: {conf*100:.1f}%"
+                color = (0, 255, 0) if status == 0 else (0, 0, 255) # Green=Empty, Red=Occupied
             
             # 4. Add text to the image. (Font scale auto-adjusts based on crop size)
             h, w = debug_img.shape[:2]
@@ -464,7 +505,7 @@ def predict_occupancy(image):
             
             # 5. Save it!
             timestamp = datetime.now().strftime("%H%M%S")
-            save_path = os.path.join(debug_dir, f"crop_{timestamp}_{result_text}.png")
+            save_path = os.path.join(debug_dir, f"crop_{timestamp}_{display_name}.png")
             cv2.imwrite(save_path, debug_img)
             
             print(f"  📸 Saved debug crop to: {save_path}")
@@ -476,8 +517,10 @@ def predict_occupancy(image):
         return {
             "class_index": class_idx,
             "class_name": result_text,
+            "status": status,
+            "status_name": status_name,
             "confidence": round(conf, 4),
-            "is_occupied": class_idx == 1,
+            "is_occupied": status == 1,
             "is_mock": False,
             "all_probabilities": {
                 CLASS_NAMES[i]: round(float(all_probs[i]), 4)
@@ -490,6 +533,8 @@ def predict_occupancy(image):
         return {
             "class_index": -1,
             "class_name": "Error",
+            "status": -1,
+            "status_name": "Offline",
             "confidence": 0,
             "is_occupied": False,
             "error": str(e)
@@ -773,7 +818,8 @@ def submit_floorplan():
         target=process_stream,
         args=(stream_id, stream_url, active_streams, occupancy_data,
               seats, SCREENSHOTS_DIR, SCREENSHOT_INTERVAL,
-              predict_occupancy, stabilize_prediction, mongo, MONGO_AVAILABLE),
+              predict_occupancy, stabilize_prediction, mongo, MONGO_AVAILABLE,
+              latest_frames, stream_status),
         daemon=True
     )
     thread.start()
@@ -909,9 +955,15 @@ def get_floorplan(floorplan_id):
 @app.route("/streams", methods=["GET"])
 def get_streams():
     """Get all active streams."""
+    streams = []
+    for stream in active_streams.values():
+        info = dict(stream)
+        status = stream_status.get(stream.get("id"))
+        info["stream_status"] = _format_stream_status(status)
+        streams.append(info)
     return jsonify({
-        "streams": list(active_streams.values()),
-        "count": len(active_streams)
+        "streams": streams,
+        "count": len(streams)
     })
 
 @app.route("/streams", methods=["POST"])
@@ -958,7 +1010,7 @@ def add_stream():
         args=(stream_id, stream_url, active_streams, occupancy_data,
               DUMMY_COORDINATES, SCREENSHOTS_DIR, SCREENSHOT_INTERVAL,
               predict_occupancy, stabilize_prediction, mongo, MONGO_AVAILABLE,
-              latest_frames),
+              latest_frames, stream_status),
         daemon=True
     )
     thread.start()
@@ -982,6 +1034,10 @@ def remove_stream(stream_id):
         del occupancy_data[stream_id]
     if stream_id in seat_history:
         del seat_history[stream_id]
+    if stream_id in latest_frames:
+        del latest_frames[stream_id]
+    if stream_id in stream_status:
+        del stream_status[stream_id]
     
     return jsonify({"message": f"Stream {stream_id} stopped and removed"})
 
@@ -1002,7 +1058,7 @@ def manual_capture(stream_id):
     
     # Run prediction
     prediction = predict_occupancy(_prepare_png_for_model(frame))
-    raw_status = prediction.get("class_index", -1)
+    raw_status = prediction.get("status", prediction.get("class_index", -1))
     raw_confidence = prediction.get("confidence", 0)
     
     # Get frame dimensions
@@ -1043,6 +1099,9 @@ def get_stream_frame(stream_id):
     stream_info = active_streams[stream_id]
     stream_url = stream_info["url"]
 
+    fresh_param = (request.args.get("fresh") or "").strip().lower()
+    force_fresh = fresh_param in ("1", "true", "yes")
+
     cached = latest_frames.get(stream_id)
     frame = None
     cached_width = None
@@ -1052,14 +1111,41 @@ def get_stream_frame(stream_id):
         cached_width = cached.get("width")
         cached_height = cached.get("height")
 
+    frame_is_fresh = False
+
+    if force_fresh:
+        frame = None
+
+    meta = None
     if frame is None:
         try:
-            frame = capture_frame_from_stream(stream_url)
+            frame, meta = capture_frame_from_stream(stream_url, return_meta=True)
         except Exception as e:
             return jsonify({"error": f"Failed to capture frame: {e}"}), 500
 
         if frame is None:
-            return jsonify({"error": "Failed to capture frame (no data)"}), 500
+            if cached is not None and cached.get("frame") is not None:
+                frame = cached.get("frame")
+            else:
+                return jsonify({"error": "Failed to capture frame (no data)"}), 500
+        else:
+            frame_is_fresh = True
+
+        # Update stream status based on the capture attempt
+        status = stream_status.setdefault(stream_id, {})
+        status["last_attempt_ts"] = time.time()
+        if frame_is_fresh:
+            status["status"] = "online"
+            status["last_frame_ts"] = status["last_attempt_ts"]
+            status["last_error"] = None
+            status["last_transport"] = meta.get("transport") if isinstance(meta, dict) else None
+        elif frame is not None:
+            status["status"] = "stale"
+            status["last_error"] = meta.get("error") if isinstance(meta, dict) else "cache_fallback"
+            status["last_transport"] = meta.get("transport") if isinstance(meta, dict) else "cache"
+        else:
+            status["status"] = "offline"
+            status["last_error"] = meta.get("error") if isinstance(meta, dict) else "no_frame"
 
         try:
             latest_frames[stream_id] = {
@@ -1085,6 +1171,7 @@ def get_stream_frame(stream_id):
         "frame": frame_base64,
         "width": width,
         "height": height,
+        "frame_is_fresh": frame_is_fresh,
         "seats": stream_info.get("coordinates", []),
         "timestamp": datetime.now().isoformat()
     })
@@ -1340,6 +1427,7 @@ def get_stream_latest(stream_id):
         "floorplan": floorplan_base64,
         "floorplan_width": floorplan_width,
         "floorplan_height": floorplan_height,
+        "stream_status": _format_stream_status(stream_status.get(stream_id)),
     })
 
 @app.route("/floorplans/<floorplan_id>/latest", methods=["GET"])
@@ -1461,12 +1549,22 @@ def get_floorplan_latest(floorplan_id):
         })
 
     floorplan_base64, floorplan_width, floorplan_height, _ = load_floorplan_asset(floorplan_id)
+    streams_status = {
+        stream_id: _format_stream_status(stream_status.get(stream_id))
+        for stream_id in stream_ids
+    }
+    streams_offline = [
+        stream_id for stream_id, status in streams_status.items()
+        if status.get("status") == "offline"
+    ]
 
     return jsonify({
         "floorplan_id": floorplan_id,
         "stream_ids": stream_ids,
         "timestamp": datetime.now().isoformat(),
         "seats": seats_list,
+        "streams_status": streams_status,
+        "streams_offline": streams_offline,
         "floorplan": floorplan_base64,
         "floorplan_width": floorplan_width,
         "floorplan_height": floorplan_height,

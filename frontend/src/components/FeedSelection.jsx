@@ -1,5 +1,15 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { getStreams, getStreamFrame, saveSeatMappings } from "../api";
+
+const POLL_INTERVAL_MS = 3000;
+
+const isEntrance = (item) => {
+  if (!item) return false;
+  if (item.type === "entrance") return true;
+  if (typeof item.id === "string" && item.id.startsWith("entrance")) return true;
+  if (typeof item.label === "string" && item.label.toLowerCase().startsWith("entrance")) return true;
+  return false;
+};
 
 export default function FeedSelection() {
   const [streams, setStreams] = useState([]);
@@ -15,6 +25,7 @@ export default function FeedSelection() {
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState(null);
   const [error, setError] = useState("");
+  const [autoRefresh, setAutoRefresh] = useState(true);
   const [fitScale, setFitScale] = useState(1);
   const [zoom, setZoom] = useState(1);
   const canvasRef = useRef(null);
@@ -29,14 +40,6 @@ export default function FeedSelection() {
     : {};
 
   console.log("DATA BEING SENT:", currentMappings);
-
-  const isEntrance = (item) => {
-    if (!item) return false;
-    if (item.type === "entrance") return true;
-    if (typeof item.id === "string" && item.id.startsWith("entrance")) return true;
-    if (typeof item.label === "string" && item.label.toLowerCase().startsWith("entrance")) return true;
-    return false;
-  };
 
   // Load available streams on mount
   useEffect(() => {
@@ -56,47 +59,66 @@ export default function FeedSelection() {
   };
 
   // Load frame when stream is selected
-  // Load frame when stream is selected
-  const loadFrame = async () => {
+  const loadFrame = useCallback(async ({ showLoading = true, fresh = false } = {}) => {
     if (!selectedStreamId) return;
-    
-    setLoading(true);
+
+    if (showLoading) {
+      setLoading(true);
+    }
     setError("");
-    
+
     try {
-      const data = await getStreamFrame(selectedStreamId);
+      const data = await getStreamFrame(selectedStreamId, { fresh });
       setFrameData(data);
-      
+
       // 👉 NEW: Filter out cosmetic shapes so we don't try to camera map them!
       const mappableSeats = (data.seats || []).filter(s => !isEntrance(s));
-      
+
       setSeats(mappableSeats);
-      
+
       // Initialize mappings for seats that don't have one yet
-      const existingMappings = seatMappingsByStream[selectedStreamId] || {};
-      const allowedIds = new Set(mappableSeats.map((seat) => seat.id));
-      const newMappings = Object.keys(existingMappings).reduce((acc, seatId) => {
-        if (allowedIds.has(seatId)) {
-          acc[seatId] = existingMappings[seatId];
-        }
-        return acc;
-      }, {});
-      mappableSeats.forEach(seat => {
-        if (!newMappings[seat.id]) {
-          newMappings[seat.id] = null;
-        }
+      setSeatMappingsByStream(prev => {
+        const existingMappings = prev[selectedStreamId] || {};
+        const allowedIds = new Set(mappableSeats.map((seat) => seat.id));
+        const newMappings = Object.keys(existingMappings).reduce((acc, seatId) => {
+          if (allowedIds.has(seatId)) {
+            acc[seatId] = existingMappings[seatId];
+          }
+          return acc;
+        }, {});
+        mappableSeats.forEach(seat => {
+          if (!newMappings[seat.id]) {
+            newMappings[seat.id] = null;
+          }
+        });
+        return {
+          ...prev,
+          [selectedStreamId]: newMappings
+        };
       });
-      setSeatMappingsByStream(prev => ({
-        ...prev,
-        [selectedStreamId]: newMappings
-      }));
     } catch (e) {
       setError("Failed to load frame: " + e.message);
     }
-    
-    setLoading(false);
-  };
 
+    if (showLoading) {
+      setLoading(false);
+    }
+  }, [selectedStreamId]);
+
+  // Initial load when stream changes
+  useEffect(() => {
+    if (!selectedStreamId) return;
+    loadFrame({ showLoading: true, fresh: true });
+  }, [selectedStreamId, loadFrame]);
+
+  // Auto-refresh the frame for live streams
+  useEffect(() => {
+    if (!autoRefresh || !selectedStreamId) return;
+    const timer = setInterval(() => {
+      loadFrame({ showLoading: false, fresh: true });
+    }, POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [autoRefresh, selectedStreamId, loadFrame]);
   const handleZoomIn = () => {
     setZoom((prev) =>
       Math.min(ZOOM_MAX, Number((prev + ZOOM_STEP).toFixed(2)))
@@ -298,7 +320,7 @@ export default function FeedSelection() {
             ))}
           </select>
           <button
-            onClick={loadFrame}
+            onClick={() => loadFrame({ showLoading: true, fresh: true })}
             disabled={!selectedStreamId || loading}
             style={{
               padding: "8px 16px",
@@ -311,6 +333,14 @@ export default function FeedSelection() {
           >
             {loading ? "Loading..." : "Load Frame"}
           </button>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#555" }}>
+            <input
+              type="checkbox"
+              checked={autoRefresh}
+              onChange={(e) => setAutoRefresh(e.target.checked)}
+            />
+            Auto-refresh ({POLL_INTERVAL_MS / 1000}s)
+          </label>
           <button
             onClick={loadStreams}
             style={{
@@ -591,3 +621,4 @@ export default function FeedSelection() {
     </div>
   );
 }
+

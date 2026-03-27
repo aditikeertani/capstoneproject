@@ -59,66 +59,86 @@ def mark_stream_offline(stream_id, active_streams, occupancy_data, coordinates, 
         if is_entrance(coord):
             continue
         seat_id = coord.get("id", "unknown")
+        existing = stream_data.get(seat_id)
+        if isinstance(existing, dict):
+            existing_status = existing.get("status")
+            if existing_status in (0, 1):
+                # Keep last known occupancy if the stream drops.
+                continue
         stream_data[seat_id] = build_offline_seat_result(coord)
 
     if reason:
         print(f"Stream {stream_id} offline: {reason}")
 
-def capture_frame_from_stream(stream_url, max_wait_s=4.0, max_packets=200):
+def capture_frame_from_stream(stream_url, max_wait_s=10.0, max_packets=200, return_meta=False):
     if stream_url is None:
-        return None
+        meta = {"transport": None, "error": "no_url"}
+        return (None, meta) if return_meta else None
     clean_url = str(stream_url).strip().strip('"').strip("'").rstrip("\\")
-    frame_img = None
     fallback_frame = None
+    last_frame = None
     start_time = time.time()
-    try:
-        video = av.open(
-            clean_url,
-            "r",
-            options={
-                "rtsp_transport": "tcp",
-                "stimeout": "5000000",
-                "rw_timeout": "5000000",
-            },
-        )
-    except Exception as e:
-        print(f"RTSP open failed for {clean_url}: {e}")
-        return None
+    meta = {"transport": None, "error": None}
 
-    try:
-        packets_processed = 0
-        for packet in video.demux():
-            packets_processed += 1
-            for frame in packet.decode():
-                if type(frame) is not av.video.frame.VideoFrame:
-                    continue
+    def try_capture(transport):
+        nonlocal fallback_frame, last_frame, start_time
+        try:
+            video = av.open(
+                clean_url,
+                "r",
+                options={
+                    "rtsp_transport": transport,
+                    "stimeout": "10000000",
+                    "rw_timeout": "10000000",
+                },
+            )
+        except Exception as e:
+            meta["error"] = f"rtsp_open_failed_{transport}: {e}"
+            print(f"RTSP open failed for {clean_url} ({transport}): {e}")
+            return False
 
-                img = frame.to_ndarray(format="bgr24")
-                if fallback_frame is None:
-                    fallback_frame = img
+        try:
+            packets_processed = 0
+            for packet in video.demux():
+                packets_processed += 1
+                for frame in packet.decode():
+                    if type(frame) is not av.video.frame.VideoFrame:
+                        continue
 
-                if getattr(frame, "key_frame", False):
-                    frame_img = img
+                    img = frame.to_ndarray(format="bgr24")
+                    if fallback_frame is None:
+                        fallback_frame = img
+                    last_frame = img
+
+                if packets_processed >= max_packets:
                     break
 
-            if frame_img is not None:
-                break
+                if (time.time() - start_time) >= max_wait_s:
+                    break
+        except Exception as e:
+            meta["error"] = f"rtsp_decode_failed_{transport}: {e}"
+            print(f"Error capturing frame from {clean_url} ({transport}): {e}")
+        finally:
+            try:
+                video.close()
+            except Exception:
+                pass
+        return last_frame is not None or fallback_frame is not None
 
-            if packets_processed >= max_packets:
-                break
+    # Try TCP first, then UDP as fallback.
+    if try_capture("tcp"):
+        meta["transport"] = "tcp"
+        meta["error"] = None
+    else:
+        if try_capture("udp"):
+            meta["transport"] = "udp"
+            meta["error"] = None
 
-            if (time.time() - start_time) >= max_wait_s:
-                break
-    except Exception as e:
-        print(f"Error capturing frame from {clean_url}: {e}")
-        return None
-    finally:
-        try:
-            video.close()
-        except Exception:
-            pass
+    if meta["transport"] is None and meta["error"] is None:
+        meta["error"] = "no_frame"
 
-    return frame_img if frame_img is not None else fallback_frame
+    result = last_frame if last_frame is not None else fallback_frame
+    return (result, meta) if return_meta else result
 
 
 def save_screenshot(frame, stream_id, screenshots_dir):
@@ -145,23 +165,52 @@ def _prepare_png_for_model(frame):
 def process_stream(stream_id, stream_url, active_streams, occupancy_data,
                    coordinates, screenshots_dir, screenshot_interval,
                    predict_fn, stabilize_fn=None, mongo=None, mongo_available=False,
-                   latest_frames=None):
+                   latest_frames=None, stream_status=None):
     """Background thread: capture frames and run detection periodically."""
     print(f"Starting stream processing for {stream_id}: {stream_url}")
     
     while stream_id in active_streams and active_streams[stream_id].get('active', False):
         try:
-            frame = capture_frame_from_stream(stream_url)
+            stream_info = active_streams.get(stream_id, {})
+            current_url = stream_info.get("url") or stream_url
+            frame, meta = capture_frame_from_stream(current_url, return_meta=True)
+            now_ts = time.time()
+            used_cache = False
+            allow_cache_fallback = str(os.environ.get("ALLOW_CACHE_FALLBACK", "0")).lower() in ("1", "true", "yes")
+            if allow_cache_fallback and frame is None and latest_frames is not None:
+                cached = latest_frames.get(stream_id)
+                if isinstance(cached, dict):
+                    cached_frame = cached.get("frame")
+                    if cached_frame is not None:
+                        frame = cached_frame
+                        used_cache = True
+                        if meta is None:
+                            meta = {}
+                        meta.setdefault("error", "cache_fallback")
+                        meta.setdefault("transport", "cache")
 
             if frame is None:
+                if stream_status is not None:
+                    status = stream_status.setdefault(stream_id, {})
+                    status["status"] = "offline"
+                    status["last_attempt_ts"] = now_ts
+                    status["last_error"] = meta.get("error") or "no_frame"
+                    status["last_transport"] = meta.get("transport")
                 mark_stream_offline(
                     stream_id,
                     active_streams,
                     occupancy_data,
                     coordinates,
-                    reason="no_frame",
+                    reason=meta.get("error") or "no_frame",
                 )
             else:
+                if stream_status is not None:
+                    status = stream_status.setdefault(stream_id, {})
+                    status["status"] = "stale" if used_cache else "online"
+                    status["last_frame_ts"] = now_ts
+                    status["last_attempt_ts"] = now_ts
+                    status["last_error"] = meta.get("error") if used_cache and isinstance(meta, dict) else None
+                    status["last_transport"] = meta.get("transport") if isinstance(meta, dict) else None
                 # Save screenshot
                 screenshot_path = save_screenshot(frame, stream_id, screenshots_dir)
                 

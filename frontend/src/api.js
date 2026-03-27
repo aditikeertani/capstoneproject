@@ -10,7 +10,7 @@ const authHeaders = () => {
   return token ? { Authorization: `Bearer ${token}` } : {};
 };
 
-const DEFAULT_TIMEOUT_MS = 8000;
+const DEFAULT_TIMEOUT_MS = 10000;
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const controller = new AbortController();
@@ -136,10 +136,14 @@ export async function captureStream(streamId) {
 /**
  * Get a single frame from a stream as base64
  */
-export async function getStreamFrame(streamId) {
+export async function getStreamFrame(streamId, options = {}) {
+  const { fresh = false } = options;
+  const cacheBust = `t=${Date.now()}`;
+  const freshParam = fresh ? "&fresh=1" : "";
+  const url = `${BASE_URL}/streams/${streamId}/frame?${cacheBust}${freshParam}`;
   let res;
   try {
-    res = await fetchWithTimeout(`${BASE_URL}/streams/${streamId}/frame`);
+    res = await fetchWithTimeout(url, { cache: "no-store" });
   } catch (err) {
     if (err && err.name === "AbortError") {
       throw new Error("Stream frame request timed out");
